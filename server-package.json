@@ -1,0 +1,23 @@
+{
+  "name": "pancakeswap-prediction-bot-server",
+  "version": "1.0.0",
+  "description": "PancakeSwap Predictions Bot with Telegram notifications",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "pancakeswap",
+    "prediction",
+    "bot",
+    "telegram"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ethers": "^6.9.0",
+    "node-telegram-bot-api": "^0.64.0",
+    "dotenv": "^16.3.1"
+  }
+}
