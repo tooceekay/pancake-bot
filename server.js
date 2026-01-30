@@ -44,6 +44,7 @@ class PancakePredictionBot {
         this.predictedBet = null;
         this.predictedLosses = null;
         this.predictedTotalLost = null;
+        this.predictedEpoch = null; // Track which epoch we predicted on
     }
 
     async getCurrentBNBPrice() {
@@ -446,6 +447,7 @@ class PancakePredictionBot {
                 this.predictedBet = null;
                 this.predictedLosses = null;
                 this.predictedTotalLost = null;
+                this.predictedEpoch = null;
             }
 
             if (won && !predictionWasHandled) {
@@ -542,6 +544,7 @@ class PancakePredictionBot {
                 if (prediction && !this.predictedResult) {
                     // Store prediction
                     this.predictedResult = prediction.predictedWin ? 'win' : 'loss';
+                    this.predictedEpoch = this.lastBetEpoch; // Remember which epoch we predicted on
                     
                     // Calculate next bet based on prediction
                     let predictedNextBet;
@@ -597,9 +600,18 @@ class PancakePredictionBot {
             }
 
             // VERIFY PREDICTION: Check if old prediction was right (async from betting)
-            if (this.predictedResult && this.lastBetEpoch && this.lastBetEpoch < epoch) {
+            if (this.predictedResult && this.predictedEpoch && this.predictedEpoch < epoch) {
                 // Check the result of the round we predicted on
+                console.log(`🔍 Verifying prediction for round ${this.predictedEpoch}...`);
+                
+                // Temporarily set lastBetEpoch to the predicted epoch to check its result
+                const currentLastBet = this.lastBetEpoch;
+                this.lastBetEpoch = this.predictedEpoch;
                 await this.checkPreviousRoundResult();
+                this.lastBetEpoch = currentLastBet; // Restore
+                
+                // Now that prediction is verified, we're waiting for the NEW bet's results
+                this.waitingForResults = true;
             }
 
             // Don't bet if already bet this round
@@ -657,7 +669,12 @@ class PancakePredictionBot {
                 console.log(`✅ Bet placed!`);
 
                 this.lastBetEpoch = epoch;
-                this.waitingForResults = true;
+                
+                // Only set waiting if we don't have an active prediction to verify
+                if (!this.predictedEpoch) {
+                    this.waitingForResults = true;
+                }
+                
                 this.state.totalBets++;
                 this.state.totalWagered += parseFloat(this.state.currentBet);
 
@@ -686,6 +703,21 @@ class PancakePredictionBot {
 
         this.isRunning = true;
         console.log('🤖 Bot started!');
+        
+        // Clear any stale waiting state from previous session
+        if (this.waitingForResults && this.lastBetEpoch) {
+            console.log(`Checking for stale results from round ${this.lastBetEpoch}...`);
+            const currentEpoch = await this.contract.currentEpoch();
+            
+            // If the epoch we were waiting on is more than 2 rounds old, just clear it
+            if (Number(currentEpoch) - this.lastBetEpoch > 2) {
+                console.log(`Round ${this.lastBetEpoch} is too old, clearing waiting state`);
+                this.waitingForResults = false;
+            } else {
+                // Try to check the result
+                await this.checkPreviousRoundResult();
+            }
+        }
 
         if (this.telegram) {
             await this.telegram.notifyBotStarted(this.config);
