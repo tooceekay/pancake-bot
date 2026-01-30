@@ -356,7 +356,7 @@ class PancakePredictionBot {
                             betAmount,
                             nextBet,
                             newLosses,
-                            this.config.maxDoubleDowns
+                            this.config.maxDoubleDowns + 1  // Show total bets allowed
                         );
                     }
                     
@@ -371,7 +371,7 @@ class PancakePredictionBot {
                             betAmount,
                             nextBet,
                             newLosses,
-                            this.config.maxDoubleDowns
+                            this.config.maxDoubleDowns + 1  // Show total bets allowed
                         );
                     }
                 }
