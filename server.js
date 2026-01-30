@@ -548,7 +548,7 @@ class PancakePredictionBot {
             console.log(`Current epoch: ${epoch}, Last bet: ${this.lastBetEpoch}, Waiting: ${this.waitingForResults}`);
 
             // EARLY PREDICTION FLOW
-            if (this.config.earlyPrediction && this.waitingForResults && this.lastBetEpoch && this.lastBetEpoch < epoch - 1) {
+            if (this.config.earlyPrediction && this.waitingForResults && this.lastBetEpoch && this.lastBetEpoch < epoch) {
                 // The round we bet on is old enough that we can try predicting
                 const prediction = await this.tryEarlyPrediction();
                 
