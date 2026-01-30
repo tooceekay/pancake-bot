@@ -40,11 +40,14 @@ class PancakePredictionBot {
             totalLost: 0
         };
         
-        this.predictedResult = null;
-        this.predictedBet = null;
-        this.predictedLosses = null;
-        this.predictedTotalLost = null;
-        this.predictedEpoch = null; // Track which epoch we predicted on
+        // Early prediction tracking
+        this.earlyPrediction = {
+            realLosses: 0,           // Confirmed losses from closed rounds
+            assumedLosses: 0,        // Predicted losses not yet confirmed
+            lastAssumedOutcome: null, // 'win' or 'loss'
+            lastAssumedBet: 0,       // The bet amount we assumed would win/lose
+            lastPredictionEpoch: null // Which epoch we made the last prediction for
+        };
     }
 
     async getCurrentBNBPrice() {
@@ -151,13 +154,19 @@ class PancakePredictionBot {
         });
 
         this.telegramController.onSettings(async () => {
-            return `⚙️ <b>Current Settings</b>\n\n` +
+            let msg = `⚙️ <b>Current Settings</b>\n\n` +
                    `💰 Base Bet: ${this.config.baseBetAmount} BNB\n` +
                    `🎯 Max Double-Downs: ${this.config.maxDoubleDowns}\n` +
                    `📊 Direction: ${this.config.betDirection}\n` +
-                   `🔮 Early Prediction: ${this.config.earlyPrediction ? 'ON' : 'OFF'}\n` +
-                   `📈 Prediction Threshold: $${this.config.predictionThreshold}\n\n` +
-                   `Use /setbet, /setmax, etc. to change settings.`;
+                   `🔮 Early Prediction: ${this.config.earlyPrediction ? 'ON' : 'OFF'}\n`;
+            
+            if (this.config.earlyPrediction) {
+                msg += `📈 Prediction Threshold: $${this.config.predictionThreshold}\n` +
+                       `🛑 Max Early Prediction Bet: ${this.config.maxEarlyPredictionBet} BNB\n`;
+            }
+            
+            msg += `\nUse /setbet, /setmax, etc. to change settings.`;
+            return msg;
         });
 
         this.telegramController.onSetBet(async (amount) => {
@@ -259,6 +268,23 @@ class PancakePredictionBot {
                    `Threshold: $${threshold}\n\n` +
                    `Bot will predict outcome if price moves ±$${threshold} from lock price.`;
         });
+        
+        this.telegramController.onSetMaxEPBet(async (amount) => {
+            const bet = parseFloat(amount);
+            if (isNaN(bet) || bet <= 0) {
+                return '❌ Invalid amount. Use: /setmaxepbet 1.0';
+            }
+            
+            if (this.isRunning) {
+                return '⚠️ Stop the bot first with /stop';
+            }
+            
+            this.config.maxEarlyPredictionBet = amount;
+            
+            return `✅ <b>Max early prediction bet updated!</b>\n\n` +
+                   `Max: ${amount} BNB\n\n` +
+                   `Bot will stop if next bet exceeds this amount.`;
+        });
     }
 
     calculateNextBet(consecutiveLosses, totalLost = 0) {
@@ -295,6 +321,7 @@ class PancakePredictionBot {
             const now = Math.floor(Date.now() / 1000);
             const timeUntilClose = closeTimestamp - now;
 
+            // Only predict in the 15-25 second window before close
             if (timeUntilClose > 25 || timeUntilClose < 15) {
                 return null;
             }
@@ -305,23 +332,75 @@ class PancakePredictionBot {
             const priceDiff = currentPrice - lockPrice;
             const threshold = parseFloat(this.config.predictionThreshold);
             
-            if (Math.abs(priceDiff) < threshold) {
-                return null;
-            }
-
+            // Get our current bet info
             const ledger = await this.contract.ledger(this.lastBetEpoch, this.wallet.address);
             const position = Number(ledger[0]);
-            const betAmount = ethers.formatEther(ledger[1]);
-            
-            const priceWentUp = priceDiff > 0;
-            const predictedWin = (position === 0 && priceWentUp) || (position === 1 && !priceWentUp);
+            const betAmount = parseFloat(ethers.formatEther(ledger[1]));
             
             const direction = position === 0 ? 'BULL' : 'BEAR';
+            const priceWentUp = priceDiff > 0;
+            
+            // Assume WIN only if price movement exceeds threshold in our favor
+            let assumedWin = false;
+            if (position === 0 && priceDiff > threshold) { // BULL and price went up enough
+                assumedWin = true;
+            } else if (position === 1 && priceDiff < -threshold) { // BEAR and price went down enough
+                assumedWin = true;
+            }
+            
+            // Calculate total losses to cover (real + assumed)
+            let totalLossesToCover = this.earlyPrediction.realLosses + this.earlyPrediction.assumedLosses;
+            
+            // Update assumed losses based on this prediction
+            if (assumedWin) {
+                // If we assume win, we'll recover losses, so next bet is base
+                this.earlyPrediction.assumedLosses = 0;
+            } else {
+                // If we assume loss, add current bet to assumed losses
+                this.earlyPrediction.assumedLosses += betAmount;
+                totalLossesToCover += betAmount;
+            }
+            
+            // Calculate next bet amount
+            let nextBet;
+            if (assumedWin) {
+                // Assuming win → bet base amount
+                nextBet = parseFloat(this.config.baseBetAmount);
+            } else {
+                // Assuming loss → need to cover all losses (real + assumed)
+                nextBet = totalLossesToCover * 2;
+            }
+            
+            // Check if next bet exceeds max allowed
+            const maxBet = parseFloat(this.config.maxEarlyPredictionBet);
+            if (nextBet > maxBet) {
+                console.log(`🛑 STOPPING: Next bet (${nextBet.toFixed(4)} BNB) exceeds max (${maxBet} BNB)`);
+                
+                if (this.telegram) {
+                    await this.telegram.sendMessage(
+                        `🛑 <b>Bot Stopped</b>\n\n` +
+                        `Reason: Next bet would exceed maximum\n` +
+                        `Required bet: ${nextBet.toFixed(4)} BNB\n` +
+                        `Maximum allowed: ${maxBet} BNB\n` +
+                        `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB\n` +
+                        `Assumed losses: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB`
+                    );
+                }
+                
+                await this.stop();
+                return null;
+            }
+            
+            // Store prediction details
+            this.earlyPrediction.lastAssumedOutcome = assumedWin ? 'win' : 'loss';
+            this.earlyPrediction.lastAssumedBet = betAmount;
+            this.earlyPrediction.lastPredictionEpoch = this.lastBetEpoch;
             
             console.log(
                 `🔮 EARLY PREDICTION: Round ${this.lastBetEpoch} (${direction}) - ` +
                 `Price ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)} - ` +
-                `Predicting ${predictedWin ? 'WIN' : 'LOSS'}`
+                `Assuming ${assumedWin ? 'WIN' : 'LOSS'} - ` +
+                `Next bet: ${nextBet.toFixed(4)} BNB`
             );
 
             if (this.telegram) {
@@ -330,13 +409,18 @@ class PancakePredictionBot {
                     `Round: ${this.lastBetEpoch}\n` +
                     `Direction: ${direction}\n` +
                     `Price movement: ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)}\n` +
-                    `Prediction: ${predictedWin ? 'WIN ✅' : 'LOSS ❌'}`
+                    `Threshold: $${threshold}\n` +
+                    `Assumption: ${assumedWin ? 'WIN ✅' : 'LOSS ❌'}\n` +
+                    `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB\n` +
+                    `Assumed losses: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB\n` +
+                    `Next bet: ${nextBet.toFixed(4)} BNB`
                 );
             }
 
             return {
-                predictedWin,
-                betAmount: parseFloat(betAmount),
+                assumedWin,
+                betAmount,
+                nextBet,
                 priceDiff
             };
         } catch (error) {
@@ -364,100 +448,83 @@ class PancakePredictionBot {
             const ledger = await this.contract.ledger(this.lastBetEpoch, this.wallet.address);
             const position = Number(ledger[0]);
             const lockPrice = Number(round[4]);
-            const betAmount = ethers.formatEther(ledger[1]);
+            const betAmount = parseFloat(ethers.formatEther(ledger[1]));
             const direction = position === 0 ? 'BULL' : 'BEAR';
 
             const priceWentUp = closePrice > lockPrice;
             const won = (position === 0 && priceWentUp) || (position === 1 && !priceWentUp);
 
-            // Check prediction if we made one
-            let predictionWasHandled = false;
-            if (this.predictedResult) {
-                predictionWasHandled = true;
-                const predictedWon = this.predictedResult === 'win';
-                const predictionCorrect = predictedWon === won;
+            // EARLY PREDICTION MODE: Verify assumptions
+            if (this.config.earlyPrediction && this.earlyPrediction.lastPredictionEpoch === this.lastBetEpoch) {
+                const assumedWin = this.earlyPrediction.lastAssumedOutcome === 'win';
+                const assumptionCorrect = assumedWin === won;
                 
-                if (predictionCorrect) {
-                    console.log(`✅ Early prediction was CORRECT!`);
-                    predictionWasHandled = false;
-                } else {
-                    console.log(`❌ Early prediction was WRONG! Applying corrections...`);
+                console.log(`🔍 Verifying assumption: ${assumedWin ? 'WIN' : 'LOSS'} → Actually ${won ? 'WON' : 'LOST'} → ${assumptionCorrect ? 'CORRECT ✅' : 'WRONG ❌'}`);
+                
+                if (won) {
+                    // We won - clear all losses (real and assumed)
+                    this.earlyPrediction.realLosses = 0;
+                    this.earlyPrediction.assumedLosses = 0;
                     
-                    const actualBetAmount = parseFloat(betAmount);
+                    console.log(`🎉 WON! Round ${this.lastBetEpoch} - All losses cleared`);
                     
-                    if (predictedWon && !won) {
-                        // We predicted WIN (reset state to 0) but actually LOST
-                        // Use the saved values from before we wrongly reset
-                        const actualBetAmount = parseFloat(betAmount);
-                        const actualNewLosses = (this.predictedLosses || 0) + 1; // What it should be
-                        const actualNewTotalLost = (this.predictedTotalLost || 0) + actualBetAmount;
-                        const actualNextBet = this.calculateNextBet(actualNewLosses, actualNewTotalLost);
+                    // Claim winnings
+                    try {
+                        const tx = await this.contract.claim([this.lastBetEpoch]);
+                        await tx.wait();
+                        console.log(`💰 Claimed winnings`);
                         
-                        console.log(`🔧 Correction: Predicted WIN but LOST. State was: ${this.state.consecutiveLosses}, should be: ${actualNewLosses}`);
-                        
-                        this.waitingForResults = false;
-                        this.state.losses++;
-                        this.state.consecutiveLosses = actualNewLosses;
-                        this.state.totalLost = actualNewTotalLost;
-                        this.state.currentBet = actualNextBet;
+                        const newBalance = await this.provider.getBalance(this.wallet.address);
+                        this.state.balance = ethers.formatEther(newBalance);
                         
                         if (this.telegram) {
                             await this.telegram.sendMessage(
-                                `❌ <b>Prediction Wrong - Corrected</b>\n\n` +
-                                `Predicted WIN but actually LOST\n\n` +
-                                `Corrected state:\n` +
-                                `• Loss streak: ${actualNewLosses}/${this.config.maxDoubleDowns + 1}\n` +
-                                `• Total lost: ${actualNewTotalLost.toFixed(6)} BNB\n` +
-                                `• Next bet: ${actualNextBet} BNB`
+                                `🎉 <b>Won Round ${this.lastBetEpoch}</b>\n\n` +
+                                `Direction: ${direction}\n` +
+                                `Bet: ${betAmount.toFixed(4)} BNB\n` +
+                                `Assumption was: ${assumptionCorrect ? 'Correct ✅' : 'Wrong ❌'}\n` +
+                                `All losses cleared!`
                             );
                         }
-                        
-                        if (actualNewLosses > this.config.maxDoubleDowns) {
-                            console.log(`🛑 MAX LOSSES REACHED after correction!`);
-                            this.stop('Max loss streak reached');
-                        }
-                        
-                    } else if (!predictedWon && won) {
-                        // We predicted LOSS (incremented losses) but actually WON
-                        console.log(`🎉 Predicted LOSS but WON! Reverting to base...`);
-                        
-                        this.waitingForResults = false;
-                        this.state.wins++;
-                        this.state.consecutiveLosses = 0;
-                        this.state.totalLost = 0;
-                        this.state.currentBet = this.config.baseBetAmount;
-                        
-                        if (this.telegram) {
-                            await this.telegram.sendMessage(
-                                `🎉 <b>Prediction Wrong - But We Won!</b>\n\n` +
-                                `Predicted LOSS but actually WON\n\n` +
-                                `Bonus: Won with bigger bet!\n` +
-                                `Reset to base bet: ${this.config.baseBetAmount} BNB`
-                            );
-                        }
-                        
-                        // Try to claim
-                        try {
-                            const tx = await this.contract.claim([this.lastBetEpoch]);
-                            await tx.wait();
-                            console.log(`💰 Claimed winnings`);
-                            
-                            const newBalance = await this.provider.getBalance(this.wallet.address);
-                            this.state.balance = ethers.formatEther(newBalance);
-                        } catch (e) {
-                            console.error('Claim error:', e.message);
-                        }
+                    } catch (e) {
+                        console.error('Claim error:', e.message);
                     }
+                    
+                    this.state.wins++;
+                } else {
+                    // We lost - convert assumed loss to real loss
+                    if (assumptionCorrect) {
+                        // We assumed loss and it was correct - loss was already in assumedLosses
+                        this.earlyPrediction.realLosses += this.earlyPrediction.assumedLosses;
+                        this.earlyPrediction.assumedLosses = 0;
+                    } else {
+                        // We assumed win but actually lost - add to real losses
+                        this.earlyPrediction.realLosses += betAmount;
+                        this.earlyPrediction.assumedLosses = 0;
+                    }
+                    
+                    console.log(`❌ LOST! Round ${this.lastBetEpoch} - Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB`);
+                    
+                    if (this.telegram) {
+                        await this.telegram.sendMessage(
+                            `❌ <b>Lost Round ${this.lastBetEpoch}</b>\n\n` +
+                            `Direction: ${direction}\n` +
+                            `Bet: ${betAmount.toFixed(4)} BNB\n` +
+                            `Assumption was: ${assumptionCorrect ? 'Correct ✅' : 'Wrong ❌'}\n` +
+                            `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB`
+                        );
+                    }
+                    
+                    this.state.losses++;
                 }
                 
-                this.predictedResult = null;
-                this.predictedBet = null;
-                this.predictedLosses = null;
-                this.predictedTotalLost = null;
-                this.predictedEpoch = null;
+                this.waitingForResults = false;
+                this.state.totalBets++;
+                return true;
             }
-
-            if (won && !predictionWasHandled) {
+            
+            // NORMAL MODE (no early prediction): Use standard Martingale logic
+            if (won) {
                 console.log(`🎉 WON! Round ${this.lastBetEpoch}`);
                 
                 this.waitingForResults = false;
@@ -480,16 +547,15 @@ class PancakePredictionBot {
                             this.lastBetEpoch,
                             direction,
                             betAmount,
-                            'TBD' // Calculate actual winnings if needed
+                            'TBD'
                         );
                     }
                 } catch (e) {
                     console.error('Claim error:', e.message);
                 }
-            } else if (!predictionWasHandled) {
-                const actualBetAmount = parseFloat(betAmount);
+            } else {
                 const newLosses = this.state.consecutiveLosses + 1;
-                const newTotalLost = this.state.totalLost + actualBetAmount;
+                const newTotalLost = this.state.totalLost + betAmount;
                 const nextBet = this.calculateNextBet(newLosses, newTotalLost);
                 
                 console.log(`❌ LOST! Round ${this.lastBetEpoch}`);
@@ -510,7 +576,7 @@ class PancakePredictionBot {
                             betAmount,
                             nextBet,
                             newLosses,
-                            this.config.maxDoubleDowns + 1  // Show total bets allowed
+                            this.config.maxDoubleDowns + 1
                         );
                     }
                     
@@ -525,7 +591,7 @@ class PancakePredictionBot {
                             betAmount,
                             nextBet,
                             newLosses,
-                            this.config.maxDoubleDowns + 1  // Show total bets allowed
+                            this.config.maxDoubleDowns + 1
                         );
                     }
                 }
@@ -548,64 +614,21 @@ class PancakePredictionBot {
             console.log(`Current epoch: ${epoch}, Last bet: ${this.lastBetEpoch}, Waiting: ${this.waitingForResults}`);
 
             // EARLY PREDICTION FLOW
-            if (this.config.earlyPrediction && this.waitingForResults && this.lastBetEpoch && this.lastBetEpoch < epoch) {
-                // The round we bet on is old enough that we can try predicting
+            if (this.config.earlyPrediction && this.waitingForResults && this.lastBetEpoch && this.lastBetEpoch <= epoch) {
+                // Try to make early prediction (15-25 second window)
                 const prediction = await this.tryEarlyPrediction();
                 
-                // If early prediction succeeds, use it
-                if (prediction && !this.predictedResult) {
-                    // Store prediction
-                    this.predictedResult = prediction.predictedWin ? 'win' : 'loss';
-                    this.predictedEpoch = this.lastBetEpoch; // Remember which epoch we predicted on
-                    
-                    // Calculate next bet based on prediction
-                    let predictedNextBet;
-                    
-                    if (prediction.predictedWin) {
-                        predictedNextBet = this.config.baseBetAmount;
-                        this.predictedLosses = 0;
-                        this.predictedTotalLost = 0;
-                        
-                        // Update state as if we won (will revert if prediction wrong)
-                        this.state.consecutiveLosses = 0;
-                        this.state.totalLost = 0;
-                        this.state.currentBet = predictedNextBet;
-                    } else {
-                        const predictedLosses = this.state.consecutiveLosses + 1;
-                        const predictedTotalLost = this.state.totalLost + prediction.betAmount;
-                        predictedNextBet = this.calculateNextBet(predictedLosses, predictedTotalLost);
-                        this.predictedLosses = predictedLosses;
-                        this.predictedTotalLost = predictedTotalLost;
-                        
-                        // Update state as if we lost (will revert if prediction wrong)
-                        this.state.consecutiveLosses = predictedLosses;
-                        this.state.totalLost = predictedTotalLost;
-                        this.state.currentBet = predictedNextBet;
-                    }
-                    
-                    this.predictedBet = parseFloat(predictedNextBet);
-                    
-                    console.log(
-                        `💭 Early prediction made! Next bet: ${predictedNextBet} BNB (will verify when round ${this.lastBetEpoch} closes)`
-                    );
-                    
-                    if (this.telegram) {
-                        await this.telegram.sendMessage(
-                            `🔮 <b>Early Prediction Made</b>\n\n` +
-                            `Predicted: ${prediction.predictedWin ? 'WIN' : 'LOSS'}\n` +
-                            `Next bet: ${predictedNextBet} BNB\n` +
-                            `Will verify when round ${this.lastBetEpoch} closes...`
-                        );
-                    }
-                    
-                    // CRITICALLY: Clear waiting flag so we can bet NOW
+                if (prediction) {
+                    // Successfully made prediction - clear waiting and use the calculated next bet
+                    console.log(`💭 Using early prediction bet: ${prediction.nextBet.toFixed(4)} BNB`);
                     this.waitingForResults = false;
+                    this.state.currentBet = prediction.nextBet.toFixed(6);
                     
                     // Fall through to bet immediately on current round
-                } else if (!prediction && this.lastBetEpoch < epoch - 1) {
-                    // Early prediction failed or timed out, and the round is definitely closed
+                } else if (!prediction && this.lastBetEpoch < epoch) {
+                    // Early prediction failed or timed out, and epoch moved forward
                     // Fall back to normal result checking
-                    console.log(`⚠️ Early prediction not available - falling back to normal result check`);
+                    console.log(`⚠️ Early prediction not available (epoch ${this.lastBetEpoch}) - checking results normally`);
                     const resultsReady = await this.checkPreviousRoundResult();
                     if (!resultsReady) return;
                 }
@@ -616,20 +639,15 @@ class PancakePredictionBot {
                 const resultsReady = await this.checkPreviousRoundResult();
                 if (!resultsReady) return;
             }
-
-            // VERIFY PREDICTION: Check if old prediction was right (async from betting)
-            if (this.predictedResult && this.predictedEpoch && this.predictedEpoch < epoch) {
-                // Check the result of the round we predicted on
-                console.log(`🔍 Verifying prediction for round ${this.predictedEpoch}...`);
-                
-                // Temporarily set lastBetEpoch to the predicted epoch to check its result
-                const currentLastBet = this.lastBetEpoch;
-                this.lastBetEpoch = this.predictedEpoch;
+            
+            // VERIFY PREVIOUS ROUND: In early prediction, check if last round closed while betting on new one
+            if (this.config.earlyPrediction && this.lastBetEpoch && this.lastBetEpoch < epoch - 1) {
+                // We're 2+ rounds ahead - check results of previous rounds asynchronously
+                console.log(`🔍 Verifying previous round ${this.lastBetEpoch} in background...`);
+                const oldLastBet = this.lastBetEpoch;
+                this.lastBetEpoch = epoch - 2; // Check the round before current
                 await this.checkPreviousRoundResult();
-                this.lastBetEpoch = currentLastBet; // Restore
-                
-                // Now that prediction is verified, we're waiting for the NEW bet's results
-                this.waitingForResults = true;
+                this.lastBetEpoch = oldLastBet; // Restore
             }
 
             // Don't bet if already bet this round
@@ -791,6 +809,13 @@ class PancakePredictionBot {
         this.state.totalLost = 0;
         this.state.currentBet = this.config.baseBetAmount;
         
+        // Reset early prediction state
+        this.earlyPrediction.realLosses = 0;
+        this.earlyPrediction.assumedLosses = 0;
+        this.earlyPrediction.lastAssumedOutcome = null;
+        this.earlyPrediction.lastAssumedBet = 0;
+        this.earlyPrediction.lastPredictionEpoch = null;
+        
         if (this.telegram && oldLosses > 0) {
             this.telegram.sendMessage(
                 `🔄 <b>Sequence Reset</b>\n\n` +
@@ -820,6 +845,7 @@ async function main() {
         betDirection: process.env.BET_DIRECTION || 'RANDOM', // BULL, BEAR, or RANDOM
         earlyPrediction: process.env.EARLY_PREDICTION === 'true',
         predictionThreshold: process.env.PREDICTION_THRESHOLD || '0.20',
+        maxEarlyPredictionBet: process.env.MAX_EARLY_PREDICTION_BET || '1.0',
         telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
         telegramChatId: process.env.TELEGRAM_CHAT_ID
     };
