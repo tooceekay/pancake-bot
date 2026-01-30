@@ -162,6 +162,30 @@ export class TelegramController {
         this.callbacks.continue = callback;
     }
 
+    onSetBet(callback) {
+        this.callbacks.setBet = callback;
+    }
+
+    onSetMax(callback) {
+        this.callbacks.setMax = callback;
+    }
+
+    onSetDirection(callback) {
+        this.callbacks.setDirection = callback;
+    }
+
+    onSetPrediction(callback) {
+        this.callbacks.setPrediction = callback;
+    }
+
+    onSetThreshold(callback) {
+        this.callbacks.setThreshold = callback;
+    }
+
+    onSettings(callback) {
+        this.callbacks.settings = callback;
+    }
+
     // Check if user is authorized
     isAuthorized(chatId) {
         return this.allowedChatIds.length === 0 || 
@@ -256,6 +280,13 @@ export class TelegramController {
                 `/stop - Stop trading bot\n` +
                 `/reset - Reset bet sequence to base\n` +
                 `/continue - Continue current streak\n\n` +
+                `<b>Settings:</b>\n` +
+                `/setbet [amount] - Set base bet (e.g. /setbet 0.01)\n` +
+                `/setmax [number] - Set max double-downs (e.g. /setmax 5)\n` +
+                `/setdirection [dir] - Set direction (BULL/BEAR/RANDOM)\n` +
+                `/setprediction [on/off] - Toggle early prediction\n` +
+                `/setthreshold [amount] - Set prediction threshold\n` +
+                `/settings - View current settings\n\n` +
                 `<b>Info:</b>\n` +
                 `/status - Check bot status\n` +
                 `/balance - Check wallet balance\n` +
@@ -277,6 +308,13 @@ export class TelegramController {
                 `/stop - Stop trading bot\n` +
                 `/reset - Reset bet sequence to base\n` +
                 `/continue - Continue current streak\n\n` +
+                `<b>Settings:</b>\n` +
+                `/setbet [amount] - Set base bet (e.g. /setbet 0.01)\n` +
+                `/setmax [number] - Set max double-downs (e.g. /setmax 5)\n` +
+                `/setdirection [dir] - Set direction (BULL/BEAR/RANDOM)\n` +
+                `/setprediction [on/off] - Toggle early prediction\n` +
+                `/setthreshold [amount] - Set prediction threshold\n` +
+                `/settings - View current settings\n\n` +
                 `<b>Info:</b>\n` +
                 `/status - Check bot status\n` +
                 `/balance - Check wallet balance\n` +
@@ -313,6 +351,101 @@ export class TelegramController {
 
             if (this.callbacks.continue) {
                 const result = await this.callbacks.continue();
+                await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
+            }
+        });
+
+        // /settings command
+        this.bot.onText(/\/settings/, async (msg) => {
+            const chatId = msg.chat.id;
+            
+            if (!this.isAuthorized(chatId)) {
+                await this.bot.sendMessage(chatId, '🚫 Unauthorized');
+                return;
+            }
+
+            if (this.callbacks.settings) {
+                const result = await this.callbacks.settings();
+                await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
+            }
+        });
+
+        // /setbet command
+        this.bot.onText(/\/setbet (.+)/, async (msg, match) => {
+            const chatId = msg.chat.id;
+            
+            if (!this.isAuthorized(chatId)) {
+                await this.bot.sendMessage(chatId, '🚫 Unauthorized');
+                return;
+            }
+
+            const amount = match[1];
+            if (this.callbacks.setBet) {
+                const result = await this.callbacks.setBet(amount);
+                await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
+            }
+        });
+
+        // /setmax command
+        this.bot.onText(/\/setmax (.+)/, async (msg, match) => {
+            const chatId = msg.chat.id;
+            
+            if (!this.isAuthorized(chatId)) {
+                await this.bot.sendMessage(chatId, '🚫 Unauthorized');
+                return;
+            }
+
+            const max = match[1];
+            if (this.callbacks.setMax) {
+                const result = await this.callbacks.setMax(max);
+                await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
+            }
+        });
+
+        // /setdirection command
+        this.bot.onText(/\/setdirection (.+)/, async (msg, match) => {
+            const chatId = msg.chat.id;
+            
+            if (!this.isAuthorized(chatId)) {
+                await this.bot.sendMessage(chatId, '🚫 Unauthorized');
+                return;
+            }
+
+            const direction = match[1].toUpperCase();
+            if (this.callbacks.setDirection) {
+                const result = await this.callbacks.setDirection(direction);
+                await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
+            }
+        });
+
+        // /setprediction command
+        this.bot.onText(/\/setprediction (.+)/, async (msg, match) => {
+            const chatId = msg.chat.id;
+            
+            if (!this.isAuthorized(chatId)) {
+                await this.bot.sendMessage(chatId, '🚫 Unauthorized');
+                return;
+            }
+
+            const value = match[1].toLowerCase();
+            if (this.callbacks.setPrediction) {
+                const result = await this.callbacks.setPrediction(value);
+                await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
+            }
+        });
+
+        // /setthreshold command
+        this.bot.onText(/\/setthreshold (.+)/, async (msg, match) => {
+            const chatId = msg.chat.id;
+            
+            if (!this.isAuthorized(chatId)) {
+                await this.bot.sendMessage(chatId, '🚫 Unauthorized');
+                return;
+            }
+
+            const threshold = match[1];
+            if (this.callbacks.setThreshold) {
+                const result = await this.callbacks.setThreshold(threshold);
                 await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
             }
         });
