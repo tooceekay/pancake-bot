@@ -349,10 +349,17 @@ class PancakePredictionBot {
         try {
             if (!this.lastBetEpoch) return false;
 
+            console.log(`🔍 Checking result for round ${this.lastBetEpoch}...`);
+
             const round = await this.contract.rounds(this.lastBetEpoch);
             const closePrice = Number(round[5]);
             
-            if (closePrice === 0) return false;
+            if (closePrice === 0) {
+                console.log(`⏳ Round ${this.lastBetEpoch} not closed yet (closePrice = 0)`);
+                return false;
+            }
+
+            console.log(`✅ Round ${this.lastBetEpoch} closed! closePrice: ${closePrice}`);
 
             const ledger = await this.contract.ledger(this.lastBetEpoch, this.wallet.address);
             const position = Number(ledger[0]);
