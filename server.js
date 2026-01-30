@@ -533,8 +533,12 @@ class PancakePredictionBot {
 
     async placeBet() {
         try {
+            console.log('🔄 placeBet() called - checking conditions...');
+            
             const currentEpoch = await this.contract.currentEpoch();
             const epoch = Number(currentEpoch);
+
+            console.log(`Current epoch: ${epoch}, Last bet: ${this.lastBetEpoch}, Waiting: ${this.waitingForResults}`);
 
             // EARLY PREDICTION FLOW
             if (this.config.earlyPrediction && this.waitingForResults && this.lastBetEpoch && this.lastBetEpoch < epoch - 1) {
@@ -725,7 +729,15 @@ class PancakePredictionBot {
 
         // Main loop
         while (this.isRunning) {
-            await this.placeBet();
+            try {
+                await this.placeBet();
+            } catch (error) {
+                console.error('Error in main loop:', error.message);
+                if (this.telegram) {
+                    await this.telegram.notifyError(`Loop error: ${error.message}`);
+                }
+            }
+            
             await new Promise(resolve => setTimeout(resolve, POLLING_INTERVAL));
         }
     }
