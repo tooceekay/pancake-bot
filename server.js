@@ -322,8 +322,11 @@ class PancakePredictionBot {
             const now = Math.floor(Date.now() / 1000);
             const timeUntilClose = closeTimestamp - now;
 
+            console.log(`🔍 tryEarlyPrediction: Round ${this.lastBetEpoch}, timeUntilClose: ${timeUntilClose}s`);
+
             // Only predict in the 15-25 second window before close
             if (timeUntilClose > 25 || timeUntilClose < 15) {
+                console.log(`⏭️ Outside prediction window (need 15-25s before close)`);
                 return null;
             }
 
@@ -372,7 +375,7 @@ class PancakePredictionBot {
             let assumedWin = false;
             if (position === 0 && priceDiff > threshold) { // BULL and price went up enough
                 assumedWin = true;
-            } else if (position === 1 && priceDiff < -threshold) { // BEAR and price went down enough
+            } else if (position === 1 && Math.abs(priceDiff) > threshold && priceDiff < 0) { // BEAR and price went down enough
                 assumedWin = true;
             }
             
