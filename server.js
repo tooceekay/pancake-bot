@@ -552,6 +552,7 @@ class PancakePredictionBot {
                 // The round we bet on is old enough that we can try predicting
                 const prediction = await this.tryEarlyPrediction();
                 
+                // If early prediction succeeds, use it
                 if (prediction && !this.predictedResult) {
                     // Store prediction
                     this.predictedResult = prediction.predictedWin ? 'win' : 'loss';
@@ -601,6 +602,12 @@ class PancakePredictionBot {
                     this.waitingForResults = false;
                     
                     // Fall through to bet immediately on current round
+                } else if (!prediction && this.lastBetEpoch < epoch - 1) {
+                    // Early prediction failed or timed out, and the round is definitely closed
+                    // Fall back to normal result checking
+                    console.log(`⚠️ Early prediction not available - falling back to normal result check`);
+                    const resultsReady = await this.checkPreviousRoundResult();
+                    if (!resultsReady) return;
                 }
             }
 
