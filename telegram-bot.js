@@ -181,6 +181,10 @@ export class TelegramController {
     onSetThreshold(callback) {
         this.callbacks.setThreshold = callback;
     }
+    
+    onSetMaxEPBet(callback) {
+        this.callbacks.setMaxEPBet = callback;
+    }
 
     onSettings(callback) {
         this.callbacks.settings = callback;
@@ -286,6 +290,7 @@ export class TelegramController {
                 `/setdirection [dir] - Set direction (BULL/BEAR/RANDOM)\n` +
                 `/setprediction [on/off] - Toggle early prediction\n` +
                 `/setthreshold [amount] - Set prediction threshold\n` +
+                `/setmaxepbet [amount] - Set max early prediction bet\n` +
                 `/settings - View current settings\n\n` +
                 `<b>Info:</b>\n` +
                 `/status - Check bot status\n` +
@@ -314,6 +319,7 @@ export class TelegramController {
                 `/setdirection [dir] - Set direction (BULL/BEAR/RANDOM)\n` +
                 `/setprediction [on/off] - Toggle early prediction\n` +
                 `/setthreshold [amount] - Set prediction threshold\n` +
+                `/setmaxepbet [amount] - Set max early prediction bet\n` +
                 `/settings - View current settings\n\n` +
                 `<b>Info:</b>\n` +
                 `/status - Check bot status\n` +
@@ -446,6 +452,22 @@ export class TelegramController {
             const threshold = match[1];
             if (this.callbacks.setThreshold) {
                 const result = await this.callbacks.setThreshold(threshold);
+                await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
+            }
+        });
+        
+        // /setmaxepbet command
+        this.bot.onText(/\/setmaxepbet (.+)/, async (msg, match) => {
+            const chatId = msg.chat.id;
+            
+            if (!this.isAuthorized(chatId)) {
+                await this.bot.sendMessage(chatId, '🚫 Unauthorized');
+                return;
+            }
+
+            const amount = match[1];
+            if (this.callbacks.setMaxEPBet) {
+                const result = await this.callbacks.setMaxEPBet(amount);
                 await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
             }
         });
