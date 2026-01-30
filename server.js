@@ -131,6 +131,22 @@ class PancakePredictionBot {
             await this.telegram.notifyStats(this.state);
             return '📊 Stats sent!';
         });
+
+        this.telegramController.onReset(async () => {
+            this.reset();
+            return '✅ Sequence reset! Next /start will use base bet.';
+        });
+
+        this.telegramController.onContinue(async () => {
+            if (this.state.consecutiveLosses > 0) {
+                return `✅ <b>Continuing Current Streak</b>\n\n` +
+                       `Next bet: ${this.state.currentBet} BNB\n` +
+                       `Loss streak: ${this.state.consecutiveLosses}\n` +
+                       `Total lost: ${this.state.totalLost.toFixed(6)} BNB`;
+            } else {
+                return '✅ No active streak. Next /start will use base bet.';
+            }
+        });
     }
 
     calculateNextBet(consecutiveLosses, totalLost = 0) {
@@ -329,7 +345,7 @@ class PancakePredictionBot {
                 this.state.totalLost = newTotalLost;
                 this.state.currentBet = nextBet;
 
-                if (newLosses >= this.config.maxDoubleDowns) {
+                if (newLosses > this.config.maxDoubleDowns) {
                     console.log(`🛑 MAX LOSSES REACHED!`);
                     
                     if (this.telegram) {
@@ -525,7 +541,42 @@ class PancakePredictionBot {
         console.log(`🛑 Bot stopped: ${reason}`);
 
         if (this.telegram) {
-            this.telegram.notifyBotStopped(reason);
+            // Build stop message with streak info
+            let message = `🛑 <b>BOT STOPPED</b>\n\nReason: ${reason}`;
+            
+            if (this.state.consecutiveLosses > 0) {
+                message += `\n\n<b>Current Streak:</b>`;
+                message += `\n• Losses: ${this.state.consecutiveLosses}`;
+                message += `\n• Total Lost: ${this.state.totalLost.toFixed(6)} BNB`;
+                message += `\n• Next Bet: ${this.state.currentBet} BNB`;
+                message += `\n\n<b>Commands:</b>`;
+                message += `\n/reset - Reset to base bet (${this.config.baseBetAmount} BNB)`;
+                message += `\n/continue - Keep current streak`;
+                message += `\n/start - Resume trading`;
+            }
+            
+            this.telegram.sendMessage(message);
+        }
+    }
+
+    reset() {
+        console.log('🔄 Resetting bet sequence to base');
+        
+        const oldLosses = this.state.consecutiveLosses;
+        const oldTotalLost = this.state.totalLost;
+        
+        this.state.consecutiveLosses = 0;
+        this.state.totalLost = 0;
+        this.state.currentBet = this.config.baseBetAmount;
+        
+        if (this.telegram && oldLosses > 0) {
+            this.telegram.sendMessage(
+                `🔄 <b>Sequence Reset</b>\n\n` +
+                `Previous streak cleared:\n` +
+                `• ${oldLosses} losses\n` +
+                `• ${oldTotalLost.toFixed(6)} BNB lost\n\n` +
+                `Next bet will be: ${this.config.baseBetAmount} BNB`
+            );
         }
     }
 
