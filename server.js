@@ -46,7 +46,8 @@ class PancakePredictionBot {
             assumedLosses: 0,        // Predicted losses not yet confirmed
             lastAssumedOutcome: null, // 'win' or 'loss'
             lastAssumedBet: 0,       // The bet amount we assumed would win/lose
-            lastPredictionEpoch: null // Which epoch we made the last prediction for
+            lastPredictionEpoch: null, // Which epoch we made the last prediction for
+            skipNextRound: false     // Flag to skip next round after uncertain prediction
         };
     }
 
@@ -338,9 +339,36 @@ class PancakePredictionBot {
             const betAmount = parseFloat(ethers.formatEther(ledger[1]));
             
             const direction = position === 0 ? 'BULL' : 'BEAR';
+            
+            // CHECK IF WITHIN SAFETY ENVELOPE (±threshold)
+            if (Math.abs(priceDiff) < threshold) {
+                // Price is within the envelope - TOO UNCERTAIN to predict
+                console.log(
+                    `⚠️ UNCERTAIN: Round ${this.lastBetEpoch} (${direction}) - ` +
+                    `Price ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)} is within ±$${threshold} threshold - ` +
+                    `Skipping prediction, will verify results next round`
+                );
+                
+                if (this.telegram) {
+                    await this.telegram.sendMessage(
+                        `⚠️ <b>Uncertain - No Prediction</b>\n\n` +
+                        `Round: ${this.lastBetEpoch}\n` +
+                        `Direction: ${direction}\n` +
+                        `Price movement: ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)}\n` +
+                        `Threshold: ±$${threshold}\n\n` +
+                        `Price is within safety envelope.\n` +
+                        `Will skip next round and verify real results.`
+                    );
+                }
+                
+                // Return special "uncertain" flag
+                return { uncertain: true };
+            }
+            
+            // OUTSIDE ENVELOPE - Make confident assumption
             const priceWentUp = priceDiff > 0;
             
-            // Assume WIN only if price movement exceeds threshold in our favor
+            // Assume WIN only if price movement is in our favor AND exceeds threshold
             let assumedWin = false;
             if (position === 0 && priceDiff > threshold) { // BULL and price went up enough
                 assumedWin = true;
@@ -397,19 +425,19 @@ class PancakePredictionBot {
             this.earlyPrediction.lastPredictionEpoch = this.lastBetEpoch;
             
             console.log(
-                `🔮 EARLY PREDICTION: Round ${this.lastBetEpoch} (${direction}) - ` +
-                `Price ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)} - ` +
+                `🔮 CONFIDENT PREDICTION: Round ${this.lastBetEpoch} (${direction}) - ` +
+                `Price ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)} (outside ±$${threshold}) - ` +
                 `Assuming ${assumedWin ? 'WIN' : 'LOSS'} - ` +
                 `Next bet: ${nextBet.toFixed(4)} BNB`
             );
 
             if (this.telegram) {
                 await this.telegram.sendMessage(
-                    `🔮 <b>Early Prediction</b>\n\n` +
+                    `🔮 <b>Confident Prediction</b>\n\n` +
                     `Round: ${this.lastBetEpoch}\n` +
                     `Direction: ${direction}\n` +
                     `Price movement: ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)}\n` +
-                    `Threshold: $${threshold}\n` +
+                    `Threshold: ±$${threshold}\n` +
                     `Assumption: ${assumedWin ? 'WIN ✅' : 'LOSS ❌'}\n` +
                     `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB\n` +
                     `Assumed losses: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB\n` +
@@ -421,7 +449,8 @@ class PancakePredictionBot {
                 assumedWin,
                 betAmount,
                 nextBet,
-                priceDiff
+                priceDiff,
+                uncertain: false
             };
         } catch (error) {
             console.error('Early prediction error:', error);
@@ -454,7 +483,7 @@ class PancakePredictionBot {
             const priceWentUp = closePrice > lockPrice;
             const won = (position === 0 && priceWentUp) || (position === 1 && !priceWentUp);
 
-            // EARLY PREDICTION MODE: Verify assumptions
+            // EARLY PREDICTION MODE: Verify assumptions OR handle uncertain skip
             if (this.config.earlyPrediction && this.earlyPrediction.lastPredictionEpoch === this.lastBetEpoch) {
                 const assumedWin = this.earlyPrediction.lastAssumedOutcome === 'win';
                 const assumptionCorrect = assumedWin === won;
@@ -520,6 +549,72 @@ class PancakePredictionBot {
                 
                 this.waitingForResults = false;
                 this.state.totalBets++;
+                
+                // Clear prediction epoch since we've verified it
+                this.earlyPrediction.lastPredictionEpoch = null;
+                this.earlyPrediction.lastAssumedOutcome = null;
+                return true;
+            }
+            
+            // EARLY PREDICTION MODE - UNCERTAIN SKIP: No assumption was made, use real results
+            if (this.config.earlyPrediction && this.earlyPrediction.skipNextRound) {
+                console.log(`🔍 Verifying after uncertain skip: Round ${this.lastBetEpoch} → ${won ? 'WON' : 'LOST'}`);
+                
+                if (won) {
+                    // We won - clear all losses
+                    this.earlyPrediction.realLosses = 0;
+                    this.earlyPrediction.assumedLosses = 0;
+                    
+                    console.log(`🎉 WON! Round ${this.lastBetEpoch} - All losses cleared`);
+                    
+                    // Claim winnings
+                    try {
+                        const tx = await this.contract.claim([this.lastBetEpoch]);
+                        await tx.wait();
+                        console.log(`💰 Claimed winnings`);
+                        
+                        const newBalance = await this.provider.getBalance(this.wallet.address);
+                        this.state.balance = ethers.formatEther(newBalance);
+                        
+                        if (this.telegram) {
+                            await this.telegram.sendMessage(
+                                `🎉 <b>Won Round ${this.lastBetEpoch}</b>\n\n` +
+                                `Direction: ${direction}\n` +
+                                `Bet: ${betAmount.toFixed(4)} BNB\n` +
+                                `(After uncertain skip - verified real result)\n` +
+                                `All losses cleared!`
+                            );
+                        }
+                    } catch (e) {
+                        console.error('Claim error:', e.message);
+                    }
+                    
+                    this.state.wins++;
+                } else {
+                    // We lost - add to real losses
+                    this.earlyPrediction.realLosses += betAmount;
+                    this.earlyPrediction.assumedLosses = 0; // No assumptions were made
+                    
+                    console.log(`❌ LOST! Round ${this.lastBetEpoch} - Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB`);
+                    
+                    if (this.telegram) {
+                        await this.telegram.sendMessage(
+                            `❌ <b>Lost Round ${this.lastBetEpoch}</b>\n\n` +
+                            `Direction: ${direction}\n` +
+                            `Bet: ${betAmount.toFixed(4)} BNB\n` +
+                            `(After uncertain skip - verified real result)\n` +
+                            `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB`
+                        );
+                    }
+                    
+                    this.state.losses++;
+                }
+                
+                this.waitingForResults = false;
+                this.state.totalBets++;
+                
+                // Results are now verified with REAL data, can resume normal betting
+                // skipNextRound flag will be cleared in placeBet after this returns true
                 return true;
             }
             
@@ -618,9 +713,19 @@ class PancakePredictionBot {
                 // Try to make early prediction (15-25 second window)
                 const prediction = await this.tryEarlyPrediction();
                 
-                if (prediction) {
-                    // Successfully made prediction - clear waiting and use the calculated next bet
-                    console.log(`💭 Using early prediction bet: ${prediction.nextBet.toFixed(4)} BNB`);
+                if (prediction && prediction.uncertain) {
+                    // Price within safety envelope - DON'T bet on next round
+                    // Let this round close, skip next round, then verify results
+                    console.log(`⚠️ Uncertain prediction - will skip next round and verify results`);
+                    this.waitingForResults = false; // Clear flag so we don't keep trying to predict
+                    
+                    // Mark that we need to verify results in the NEXT round (not bet)
+                    this.earlyPrediction.skipNextRound = true;
+                    return; // Don't bet this round
+                    
+                } else if (prediction && !prediction.uncertain) {
+                    // Confident prediction - use the calculated next bet
+                    console.log(`💭 Using confident prediction bet: ${prediction.nextBet.toFixed(4)} BNB`);
                     this.waitingForResults = false;
                     this.state.currentBet = prediction.nextBet.toFixed(6);
                     
@@ -633,6 +738,20 @@ class PancakePredictionBot {
                     if (!resultsReady) return;
                 }
             }
+            
+            // SKIP ROUND AFTER UNCERTAIN PREDICTION
+            if (this.config.earlyPrediction && this.earlyPrediction.skipNextRound) {
+                // We're in the "skip round" - check if previous round is closed
+                if (this.lastBetEpoch && this.lastBetEpoch < epoch) {
+                    console.log(`🔍 Skip round active - verifying results from round ${this.lastBetEpoch}`);
+                    const resultsReady = await this.checkPreviousRoundResult();
+                    if (resultsReady) {
+                        // Results verified - clear skip flag and continue normally next round
+                        this.earlyPrediction.skipNextRound = false;
+                    }
+                }
+                return; // Don't bet this round
+            }
 
             // STANDARD FLOW: Wait for results (when NOT using early prediction)
             if (this.waitingForResults && this.lastBetEpoch && !this.config.earlyPrediction) {
@@ -641,7 +760,7 @@ class PancakePredictionBot {
             }
             
             // VERIFY PREVIOUS ROUND: In early prediction, check if last round closed while betting on new one
-            if (this.config.earlyPrediction && this.lastBetEpoch && this.lastBetEpoch < epoch - 1) {
+            if (this.config.earlyPrediction && this.lastBetEpoch && this.lastBetEpoch < epoch - 1 && !this.earlyPrediction.skipNextRound) {
                 // We're 2+ rounds ahead - check results of previous rounds asynchronously
                 console.log(`🔍 Verifying previous round ${this.lastBetEpoch} in background...`);
                 const oldLastBet = this.lastBetEpoch;
@@ -815,6 +934,7 @@ class PancakePredictionBot {
         this.earlyPrediction.lastAssumedOutcome = null;
         this.earlyPrediction.lastAssumedBet = 0;
         this.earlyPrediction.lastPredictionEpoch = null;
+        this.earlyPrediction.skipNextRound = false;
         
         if (this.telegram && oldLosses > 0) {
             this.telegram.sendMessage(
