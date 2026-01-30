@@ -110,13 +110,14 @@ class PancakePredictionBot {
         this.telegramController.onStatus(async () => {
             const status = this.isRunning ? '🟢 RUNNING' : '🔴 STOPPED';
             const waiting = this.waitingForResults ? '⏳ Waiting for results...' : '✅ Ready to bet';
+            const maxLosses = this.config.maxDoubleDowns + 1; // Base bet + doubles
             
             return `<b>BOT STATUS</b>\n\n` +
                    `Status: ${status}\n` +
                    `State: ${waiting}\n` +
                    `Balance: ${this.state.balance} BNB\n` +
                    `Next Bet: ${this.state.currentBet} BNB\n` +
-                   `Loss Streak: ${this.state.consecutiveLosses}/${this.config.maxDoubleDowns}`;
+                   `Loss Streak: ${this.state.consecutiveLosses}/${maxLosses}`;
         });
 
         this.telegramController.onBalance(async () => {
