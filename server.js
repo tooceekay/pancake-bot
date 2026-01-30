@@ -47,7 +47,8 @@ class PancakePredictionBot {
             lastAssumedOutcome: null, // 'win' or 'loss'
             lastAssumedBet: 0,       // The bet amount we assumed would win/lose
             lastPredictionEpoch: null, // Which epoch we made the last prediction for
-            skipNextRound: false     // Flag to skip next round after uncertain prediction
+            skipNextRound: false,     // Flag to skip next round after uncertain prediction
+            processedRounds: new Set() // Track rounds we've already checked to prevent duplicate processing
         };
     }
 
@@ -322,19 +323,28 @@ class PancakePredictionBot {
             const now = Math.floor(Date.now() / 1000);
             const timeUntilClose = closeTimestamp - now;
 
-            console.log(`🔍 tryEarlyPrediction: Round ${this.lastBetEpoch}, timeUntilClose: ${timeUntilClose}s`);
-
             // Only predict in the 15-25 second window before close
             if (timeUntilClose > 25 || timeUntilClose < 15) {
-                console.log(`⏭️ Outside prediction window (need 15-25s before close)`);
                 return null;
             }
 
             const currentPrice = await this.getCurrentBNBPrice();
-            if (!currentPrice) return null;
+            if (!currentPrice) {
+                console.log(`⚠️ Could not get current price for prediction`);
+                return null;
+            }
 
             const priceDiff = currentPrice - lockPrice;
             const threshold = parseFloat(this.config.predictionThreshold);
+            
+            console.log(
+                `📊 Early Prediction Window - Round ${this.lastBetEpoch}\n` +
+                `   Lock Price: $${lockPrice.toFixed(2)}\n` +
+                `   Current Price: $${currentPrice.toFixed(2)}\n` +
+                `   Price Diff: ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)}\n` +
+                `   Threshold: ±$${threshold}\n` +
+                `   Time Until Close: ${timeUntilClose}s`
+            );
             
             // Get our current bet info
             const ledger = await this.contract.ledger(this.lastBetEpoch, this.wallet.address);
@@ -347,19 +357,18 @@ class PancakePredictionBot {
             if (Math.abs(priceDiff) < threshold) {
                 // Price is within the envelope - TOO UNCERTAIN to predict
                 console.log(
-                    `⚠️ UNCERTAIN: Round ${this.lastBetEpoch} (${direction}) - ` +
-                    `Price ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)} is within ±$${threshold} threshold - ` +
-                    `Skipping prediction, will verify results next round`
+                    `⚠️ UNCERTAIN - Price movement ($${Math.abs(priceDiff).toFixed(2)}) is LESS than threshold ($${threshold})\n` +
+                    `   Round ${this.lastBetEpoch} - Skipping next round to verify real results`
                 );
                 
                 if (this.telegram) {
                     await this.telegram.sendMessage(
                         `⚠️ <b>Uncertain - No Prediction</b>\n\n` +
                         `Round: ${this.lastBetEpoch}\n` +
-                        `Direction: ${direction}\n` +
                         `Price movement: ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)}\n` +
-                        `Threshold: ±$${threshold}\n\n` +
-                        `Price is within safety envelope.\n` +
+                        `Movement size: $${Math.abs(priceDiff).toFixed(2)}\n` +
+                        `Threshold: $${threshold}\n\n` +
+                        `Movement too small to predict confidently.\n` +
                         `Will skip next round and verify real results.`
                     );
                 }
@@ -428,10 +437,11 @@ class PancakePredictionBot {
             this.earlyPrediction.lastPredictionEpoch = this.lastBetEpoch;
             
             console.log(
-                `🔮 CONFIDENT PREDICTION: Round ${this.lastBetEpoch} (${direction}) - ` +
-                `Price ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)} (outside ±$${threshold}) - ` +
-                `Assuming ${assumedWin ? 'WIN' : 'LOSS'} - ` +
-                `Next bet: ${nextBet.toFixed(4)} BNB`
+                `🔮 CONFIDENT PREDICTION - Price movement ($${Math.abs(priceDiff).toFixed(2)}) EXCEEDS threshold ($${threshold})\n` +
+                `   Round ${this.lastBetEpoch} (${direction})\n` +
+                `   Price diff: ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)}\n` +
+                `   Assuming: ${assumedWin ? 'WIN ✅' : 'LOSS ❌'}\n` +
+                `   Next bet: ${nextBet.toFixed(4)} BNB`
             );
 
             if (this.telegram) {
@@ -465,6 +475,12 @@ class PancakePredictionBot {
         try {
             if (!this.lastBetEpoch) return false;
 
+            // Prevent checking the same round multiple times
+            if (this.earlyPrediction.processedRounds.has(this.lastBetEpoch)) {
+                console.log(`⏭️ Round ${this.lastBetEpoch} already processed, skipping`);
+                return true; // Return true so betting continues
+            }
+
             console.log(`🔍 Checking result for round ${this.lastBetEpoch}...`);
 
             const round = await this.contract.rounds(this.lastBetEpoch);
@@ -476,6 +492,15 @@ class PancakePredictionBot {
             }
 
             console.log(`✅ Round ${this.lastBetEpoch} closed! closePrice: ${closePrice}`);
+
+            // Mark this round as processed to prevent duplicate checks
+            this.earlyPrediction.processedRounds.add(this.lastBetEpoch);
+            
+            // Keep only the last 10 rounds to prevent memory growth
+            if (this.earlyPrediction.processedRounds.size > 10) {
+                const sorted = Array.from(this.earlyPrediction.processedRounds).sort((a, b) => a - b);
+                this.earlyPrediction.processedRounds.delete(sorted[0]); // Remove oldest
+            }
 
             const ledger = await this.contract.ledger(this.lastBetEpoch, this.wallet.address);
             const position = Number(ledger[0]);
