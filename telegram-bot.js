@@ -154,6 +154,14 @@ export class TelegramController {
         this.callbacks.stats = callback;
     }
 
+    onReset(callback) {
+        this.callbacks.reset = callback;
+    }
+
+    onContinue(callback) {
+        this.callbacks.continue = callback;
+    }
+
     // Check if user is authorized
     isAuthorized(chatId) {
         return this.allowedChatIds.length === 0 || 
@@ -243,14 +251,70 @@ export class TelegramController {
             
             const helpText = 
                 `🤖 <b>Bot Commands</b>\n\n` +
+                `<b>Control:</b>\n` +
                 `/start - Start trading bot\n` +
                 `/stop - Stop trading bot\n` +
+                `/reset - Reset bet sequence to base\n` +
+                `/continue - Continue current streak\n\n` +
+                `<b>Info:</b>\n` +
                 `/status - Check bot status\n` +
                 `/balance - Check wallet balance\n` +
                 `/stats - View trading statistics\n` +
+                `/commands - Show this help message\n` +
                 `/help - Show this help message`;
             
             await this.bot.sendMessage(chatId, helpText, { parse_mode: 'HTML' });
+        });
+
+        // /commands command (alias for help)
+        this.bot.onText(/\/commands/, async (msg) => {
+            const chatId = msg.chat.id;
+            
+            const helpText = 
+                `🤖 <b>Bot Commands</b>\n\n` +
+                `<b>Control:</b>\n` +
+                `/start - Start trading bot\n` +
+                `/stop - Stop trading bot\n` +
+                `/reset - Reset bet sequence to base\n` +
+                `/continue - Continue current streak\n\n` +
+                `<b>Info:</b>\n` +
+                `/status - Check bot status\n` +
+                `/balance - Check wallet balance\n` +
+                `/stats - View trading statistics\n` +
+                `/commands - Show this help message\n` +
+                `/help - Show this help message`;
+            
+            await this.bot.sendMessage(chatId, helpText, { parse_mode: 'HTML' });
+        });
+
+        // /reset command
+        this.bot.onText(/\/reset/, async (msg) => {
+            const chatId = msg.chat.id;
+            
+            if (!this.isAuthorized(chatId)) {
+                await this.bot.sendMessage(chatId, '🚫 Unauthorized');
+                return;
+            }
+
+            if (this.callbacks.reset) {
+                const result = await this.callbacks.reset();
+                await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
+            }
+        });
+
+        // /continue command
+        this.bot.onText(/\/continue/, async (msg) => {
+            const chatId = msg.chat.id;
+            
+            if (!this.isAuthorized(chatId)) {
+                await this.bot.sendMessage(chatId, '🚫 Unauthorized');
+                return;
+            }
+
+            if (this.callbacks.continue) {
+                const result = await this.callbacks.continue();
+                await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
+            }
         });
 
         console.log('Telegram controller started - listening for commands');
