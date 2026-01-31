@@ -3,7 +3,7 @@ import { TelegramNotifier, TelegramController } from './telegram-bot.js';
 import 'dotenv/config';
 
 const PREDICTION_CONTRACT = '0x18B2A687610328590Bc8F2e5fEdDe3b582A49cdA';
-const BET_TIMING_SECONDS = 240; // Bet any time up to 240 seconds before lock
+const BET_TIMING_SECONDS = 20;
 const POLLING_INTERVAL = 2000;
 
 const PREDICTION_ABI = [
@@ -48,17 +48,23 @@ class PancakePredictionBot {
             lastAssumedBet: 0,       // The bet amount we assumed would win/lose
             lastPredictionEpoch: null, // Which epoch we made the last prediction for
             skipNextRound: false,     // Flag to skip next round after uncertain prediction
-            processedRounds: new Set() // Track rounds we've already checked to prevent duplicate processing
+            processedRounds: new Set(), // Track rounds we've already checked to prevent duplicate processing
+            shouldBetNow: false      // Flag to bypass timing check after confident prediction
         };
     }
 
     async getCurrentBNBPrice() {
         try {
+            console.log(`📡 Attempting to call Binance API...`);
             const response = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BNBUSDT');
+            console.log(`📡 Response status: ${response.status}`);
             const data = await response.json();
-            return parseFloat(data.price);
+            const price = parseFloat(data.price);
+            console.log(`📡 Binance API SUCCESS: $${price.toFixed(2)}`);
+            return price;
         } catch (error) {
-            console.error('Error fetching BNB price:', error);
+            console.error(`❌ Binance API FAILED: ${error.message}`);
+            console.error(`❌ Error stack: ${error.stack}`);
             return null;
         }
     }
@@ -318,30 +324,34 @@ class PancakePredictionBot {
 
             const round = await this.contract.rounds(this.lastBetEpoch);
             const lockTimestamp = Number(round[2]); // When betting closes
-            const closeTimestamp = Number(round[3]); // When round ends (10s after lock)
+            const closeTimestamp = Number(round[3]); // When round ends (5 min after lock)
             const lockPrice = Number(round[4]) / 1e8;
             
             const now = Math.floor(Date.now() / 1000);
-            const timeUntilLock = lockTimestamp - now;
+            const timeUntilClose = closeTimestamp - now;
 
-            console.log(`🔍 tryEarlyPrediction check: Round ${this.lastBetEpoch}, timeUntilLock: ${timeUntilLock}s (need 10-30s)`);
+            // ALWAYS get and display current price to prove we're checking
+            const currentPrice = await this.getCurrentBNBPrice();
+            const priceDiff = currentPrice ? currentPrice - lockPrice : 0;
+            const threshold = parseFloat(this.config.predictionThreshold);
+            
+            console.log(
+                `🔍 PRICE CHECK - Round ${this.lastBetEpoch}\n` +
+                `   Lock Price: $${lockPrice.toFixed(2)}\n` +
+                `   Current Price: $${currentPrice ? currentPrice.toFixed(2) : 'N/A'}\n` +
+                `   Price Diff: ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)}\n` +
+                `   Threshold: ±$${threshold}\n` +
+                `   Time Until Close: ${timeUntilClose}s\n` +
+                `   Window: 15-25s\n` +
+                `   ${timeUntilClose >= 15 && timeUntilClose <= 25 ? '✅ IN WINDOW' : '❌ OUTSIDE WINDOW'}`
+            );
 
-            // Only predict in the 10-30 second window before LOCK (when betting closes)
-            // Window is wider to account for 2s polling interval
-            if (timeUntilLock > 30 || timeUntilLock < 10) {
+            // Only make prediction if in the window
+            if (timeUntilClose > 25 || timeUntilClose < 15) {
                 return null;
             }
             
-            console.log(`✅ IN PREDICTION WINDOW - Getting price data...`);
-
-            const currentPrice = await this.getCurrentBNBPrice();
-            if (!currentPrice) {
-                console.log(`⚠️ Could not get current price for prediction`);
-                return null;
-            }
-
-            const priceDiff = currentPrice - lockPrice;
-            const threshold = parseFloat(this.config.predictionThreshold);
+            console.log(`✅ IN PREDICTION WINDOW - Making prediction decision...`);
             
             console.log(
                 `📊 Early Prediction Window - Round ${this.lastBetEpoch}\n` +
@@ -759,11 +769,12 @@ class PancakePredictionBot {
                     
                 } else if (prediction && !prediction.uncertain) {
                     // Confident prediction - use the calculated next bet
-                    console.log(`💭 Using confident prediction bet: ${prediction.nextBet.toFixed(4)} BNB`);
+                    console.log(`💭 Using confident prediction: ${prediction.nextBet.toFixed(4)} BNB - betting NOW on current epoch`);
                     this.waitingForResults = false;
                     this.state.currentBet = prediction.nextBet.toFixed(6);
+                    this.earlyPrediction.shouldBetNow = true; // Flag to bypass timing check
                     
-                    // Fall through to bet immediately on current round
+                    // Fall through to bet immediately on current epoch
                 } else if (!prediction && this.lastBetEpoch < epoch) {
                     // Early prediction failed or timed out, and epoch moved forward
                     // Fall back to normal result checking
@@ -821,7 +832,18 @@ class PancakePredictionBot {
             const now = Math.floor(Date.now() / 1000);
             const timeUntilLock = lockTimestamp - now;
 
-            if (timeUntilLock <= BET_TIMING_SECONDS && timeUntilLock > 15) {
+            // Allow betting if:
+            // 1. Normal timing window (15-20s before lock), OR
+            // 2. We just made a confident early prediction
+            const inBettingWindow = (timeUntilLock <= BET_TIMING_SECONDS && timeUntilLock > 15) || 
+                                     this.earlyPrediction.shouldBetNow;
+            
+            if (inBettingWindow) {
+                // Clear the flag after checking
+                if (this.earlyPrediction.shouldBetNow) {
+                    console.log(`🎯 Betting immediately after confident prediction (bypassing timing check)`);
+                    this.earlyPrediction.shouldBetNow = false;
+                }
                 // Determine direction based on config
                 let direction;
                 if (this.config.betDirection === 'BULL') {
