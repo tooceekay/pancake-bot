@@ -324,12 +324,15 @@ class PancakePredictionBot {
             const now = Math.floor(Date.now() / 1000);
             const timeUntilLock = lockTimestamp - now;
 
-            console.log(`🔍 tryEarlyPrediction check: Round ${this.lastBetEpoch}, timeUntilLock: ${timeUntilLock}s (need 15-25s)`);
+            console.log(`🔍 tryEarlyPrediction check: Round ${this.lastBetEpoch}, timeUntilLock: ${timeUntilLock}s (need 10-30s)`);
 
-            // Only predict in the 15-25 second window before LOCK (when betting closes)
-            if (timeUntilLock > 25 || timeUntilLock < 15) {
+            // Only predict in the 10-30 second window before LOCK (when betting closes)
+            // Window is wider to account for 2s polling interval
+            if (timeUntilLock > 30 || timeUntilLock < 10) {
                 return null;
             }
+            
+            console.log(`✅ IN PREDICTION WINDOW - Getting price data...`);
 
             const currentPrice = await this.getCurrentBNBPrice();
             if (!currentPrice) {
