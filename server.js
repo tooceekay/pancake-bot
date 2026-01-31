@@ -55,15 +55,15 @@ class PancakePredictionBot {
 
     async getCurrentBNBPrice() {
         try {
-            console.log(`📡 Attempting to call Binance API...`);
-            const response = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BNBUSDT');
+            console.log(`📡 Calling CoinGecko API for BNB price...`);
+            const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=binancecoin&vs_currencies=usd');
             console.log(`📡 Response status: ${response.status}`);
             const data = await response.json();
-            const price = parseFloat(data.price);
-            console.log(`📡 Binance API SUCCESS: $${price.toFixed(2)}`);
+            const price = data.binancecoin.usd;
+            console.log(`📡 CoinGecko API SUCCESS: $${price.toFixed(2)}`);
             return price;
         } catch (error) {
-            console.error(`❌ Binance API FAILED: ${error.message}`);
+            console.error(`❌ Price API FAILED: ${error.message}`);
             console.error(`❌ Error stack: ${error.stack}`);
             return null;
         }
