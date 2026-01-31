@@ -899,12 +899,20 @@ class PancakePredictionBot {
                                     console.log(`❌ VERIFIED LOSS - Round ${roundEpoch} (assumed win was WRONG!)`);
                                     this.earlyPrediction.realLosses += betAmt;
                                     
+                                    // Recalculate the current bet to cover the newly verified losses
+                                    const totalLosses = this.earlyPrediction.realLosses + this.earlyPrediction.assumedLosses;
+                                    const correctedBet = (totalLosses * 2).toFixed(6);
+                                    this.state.currentBet = correctedBet;
+                                    
+                                    console.log(`📈 Correcting bet amount to ${correctedBet} BNB to cover ${totalLosses.toFixed(4)} BNB total losses`);
+                                    
                                     if (this.telegram) {
                                         await this.telegram.sendMessage(
                                             `❌ <b>Verified Loss</b>\n\n` +
                                             `Round: ${roundEpoch}\n` +
                                             `Assumed WIN but actually LOST\n` +
-                                            `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB`
+                                            `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB\n` +
+                                            `Next bet corrected to: ${correctedBet} BNB`
                                         );
                                     }
                                 }
