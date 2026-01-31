@@ -665,15 +665,15 @@ class PancakePredictionBot {
                 } else {
                     // We lost - add to real losses
                     this.earlyPrediction.realLosses += betAmount;
-                    this.earlyPrediction.assumedLosses = 0; // No assumptions were made
+                    // DON'T clear assumed losses - they're still pending from other rounds
                     
                     // Calculate next bet to cover losses
                     const totalLosses = this.earlyPrediction.realLosses + this.earlyPrediction.assumedLosses;
                     const nextBet = (totalLosses * 2).toFixed(6);
                     this.state.currentBet = nextBet;
                     
-                    console.log(`❌ LOST! Round ${this.lastBetEpoch} - Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB`);
-                    console.log(`📈 Next bet: ${nextBet} BNB (to cover ${totalLosses.toFixed(4)} BNB losses)`);
+                    console.log(`❌ LOST! Round ${this.lastBetEpoch} - Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB, Assumed losses: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB`);
+                    console.log(`📈 Next bet: ${nextBet} BNB (to cover ${totalLosses.toFixed(4)} BNB total losses)`);
                     
                     if (this.telegram) {
                         await this.telegram.sendMessage(
@@ -682,6 +682,7 @@ class PancakePredictionBot {
                             `Bet: ${betAmount.toFixed(4)} BNB\n` +
                             `(After uncertain skip - verified real result)\n` +
                             `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB\n` +
+                            `Assumed losses: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB\n` +
                             `Next bet: ${nextBet} BNB`
                         );
                     }
