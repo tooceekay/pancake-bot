@@ -55,27 +55,39 @@ class PancakePredictionBot {
 
     async getCurrentBNBPrice() {
         try {
-            console.log(`📡 Getting current BNB price from most recent round...`);
-            const currentEpoch = await this.contract.currentEpoch();
-            const epoch = Number(currentEpoch);
+            console.log(`📡 Getting current BNB price from Chainlink oracle...`);
             
-            // Get the most recently closed round (current - 1)
-            const prevRound = await this.contract.rounds(epoch - 1);
-            const closePrice = Number(prevRound[5]);
+            // Chainlink BNB/USD Price Feed on BSC
+            // Address: 0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE
+            const chainlinkABI = [
+                {
+                    "inputs": [],
+                    "name": "latestRoundData",
+                    "outputs": [
+                        { "name": "roundId", "type": "uint80" },
+                        { "name": "answer", "type": "int256" },
+                        { "name": "startedAt", "type": "uint256" },
+                        { "name": "updatedAt", "type": "uint256" },
+                        { "name": "answeredInRound", "type": "uint80" }
+                    ],
+                    "stateMutability": "view",
+                    "type": "function"
+                }
+            ];
             
-            if (closePrice === 0) {
-                // Round not closed yet, try one more round back
-                const prevPrevRound = await this.contract.rounds(epoch - 2);
-                const price = Number(prevPrevRound[5]) / 1e8;
-                console.log(`📡 Using round ${epoch - 2} close price: $${price.toFixed(2)}`);
-                return price;
-            }
+            const priceFeed = new ethers.Contract(
+                '0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE',
+                chainlinkABI,
+                this.provider
+            );
             
-            const price = closePrice / 1e8;
-            console.log(`📡 Using round ${epoch - 1} close price: $${price.toFixed(2)}`);
+            const roundData = await priceFeed.latestRoundData();
+            const price = Number(roundData[1]) / 1e8; // Chainlink uses 8 decimals
+            
+            console.log(`📡 Chainlink oracle price: $${price.toFixed(2)}`);
             return price;
         } catch (error) {
-            console.error(`❌ Price fetch FAILED: ${error.message}`);
+            console.error(`❌ Chainlink price fetch FAILED: ${error.message}`);
             return null;
         }
     }
