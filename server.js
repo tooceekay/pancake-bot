@@ -954,6 +954,31 @@ class PancakePredictionBot {
                     console.log(`🎯 Betting immediately after confident prediction (bypassing timing check)`);
                     this.earlyPrediction.shouldBetNow = false;
                 }
+                
+                // CHECK MAX BET LIMIT (when early prediction is enabled)
+                if (this.config.earlyPrediction) {
+                    const maxBet = parseFloat(this.config.maxEarlyPredictionBet);
+                    const currentBetFloat = parseFloat(this.state.currentBet);
+                    
+                    if (currentBetFloat > maxBet) {
+                        console.log(`🛑 STOPPING: Current bet (${currentBetFloat.toFixed(4)} BNB) exceeds max (${maxBet} BNB)`);
+                        
+                        if (this.telegram) {
+                            await this.telegram.sendMessage(
+                                `🛑 <b>Bot Stopped</b>\n\n` +
+                                `Reason: Bet amount exceeds maximum\n` +
+                                `Current bet: ${currentBetFloat.toFixed(4)} BNB\n` +
+                                `Maximum allowed: ${maxBet} BNB\n` +
+                                `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB\n` +
+                                `Assumed losses: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB`
+                            );
+                        }
+                        
+                        await this.stop();
+                        return;
+                    }
+                }
+                
                 // Determine direction based on config
                 let direction;
                 if (this.config.betDirection === 'BULL') {
