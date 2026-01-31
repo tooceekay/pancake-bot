@@ -55,16 +55,27 @@ class PancakePredictionBot {
 
     async getCurrentBNBPrice() {
         try {
-            console.log(`📡 Calling CoinGecko API for BNB price...`);
-            const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=binancecoin&vs_currencies=usd');
-            console.log(`📡 Response status: ${response.status}`);
-            const data = await response.json();
-            const price = data.binancecoin.usd;
-            console.log(`📡 CoinGecko API SUCCESS: $${price.toFixed(2)}`);
+            console.log(`📡 Getting current BNB price from most recent round...`);
+            const currentEpoch = await this.contract.currentEpoch();
+            const epoch = Number(currentEpoch);
+            
+            // Get the most recently closed round (current - 1)
+            const prevRound = await this.contract.rounds(epoch - 1);
+            const closePrice = Number(prevRound[5]);
+            
+            if (closePrice === 0) {
+                // Round not closed yet, try one more round back
+                const prevPrevRound = await this.contract.rounds(epoch - 2);
+                const price = Number(prevPrevRound[5]) / 1e8;
+                console.log(`📡 Using round ${epoch - 2} close price: $${price.toFixed(2)}`);
+                return price;
+            }
+            
+            const price = closePrice / 1e8;
+            console.log(`📡 Using round ${epoch - 1} close price: $${price.toFixed(2)}`);
             return price;
         } catch (error) {
-            console.error(`❌ Price API FAILED: ${error.message}`);
-            console.error(`❌ Error stack: ${error.stack}`);
+            console.error(`❌ Price fetch FAILED: ${error.message}`);
             return null;
         }
     }
@@ -330,28 +341,22 @@ class PancakePredictionBot {
             const now = Math.floor(Date.now() / 1000);
             const timeUntilClose = closeTimestamp - now;
 
-            // ALWAYS get and display current price to prove we're checking
-            const currentPrice = await this.getCurrentBNBPrice();
-            const priceDiff = currentPrice ? currentPrice - lockPrice : 0;
-            const threshold = parseFloat(this.config.predictionThreshold);
-            
-            console.log(
-                `🔍 PRICE CHECK - Round ${this.lastBetEpoch}\n` +
-                `   Lock Price: $${lockPrice.toFixed(2)}\n` +
-                `   Current Price: $${currentPrice ? currentPrice.toFixed(2) : 'N/A'}\n` +
-                `   Price Diff: ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)}\n` +
-                `   Threshold: ±$${threshold}\n` +
-                `   Time Until Close: ${timeUntilClose}s\n` +
-                `   Window: 15-25s\n` +
-                `   ${timeUntilClose >= 15 && timeUntilClose <= 25 ? '✅ IN WINDOW' : '❌ OUTSIDE WINDOW'}`
-            );
-
-            // Only make prediction if in the window
+            // Only make prediction if in the window (15-25s before close)
             if (timeUntilClose > 25 || timeUntilClose < 15) {
                 return null;
             }
             
-            console.log(`✅ IN PREDICTION WINDOW - Making prediction decision...`);
+            console.log(`✅ IN PREDICTION WINDOW (${timeUntilClose}s until close) - Getting price snapshot...`);
+
+            // NOW get the current price (only once, when in the window)
+            const currentPrice = await this.getCurrentBNBPrice();
+            if (!currentPrice) {
+                console.log(`⚠️ Could not get current price for prediction`);
+                return null;
+            }
+
+            const priceDiff = currentPrice - lockPrice;
+            const threshold = parseFloat(this.config.predictionThreshold);
             
             console.log(
                 `📊 Early Prediction Window - Round ${this.lastBetEpoch}\n` +
@@ -381,6 +386,8 @@ class PancakePredictionBot {
                     await this.telegram.sendMessage(
                         `⚠️ <b>Uncertain - No Prediction</b>\n\n` +
                         `Round: ${this.lastBetEpoch}\n` +
+                        `Lock Price: $${lockPrice.toFixed(2)}\n` +
+                        `Current Price: $${currentPrice.toFixed(2)}\n` +
                         `Price movement: ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)}\n` +
                         `Movement size: $${Math.abs(priceDiff).toFixed(2)}\n` +
                         `Threshold: $${threshold}\n\n` +
@@ -465,6 +472,8 @@ class PancakePredictionBot {
                     `🔮 <b>Confident Prediction</b>\n\n` +
                     `Round: ${this.lastBetEpoch}\n` +
                     `Direction: ${direction}\n` +
+                    `Lock Price: $${lockPrice.toFixed(2)}\n` +
+                    `Current Price: $${currentPrice.toFixed(2)}\n` +
                     `Price movement: ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)}\n` +
                     `Threshold: ±$${threshold}\n` +
                     `Assumption: ${assumedWin ? 'WIN ✅' : 'LOSS ❌'}\n` +
