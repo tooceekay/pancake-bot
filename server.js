@@ -317,14 +317,17 @@ class PancakePredictionBot {
             if (!this.lastBetEpoch) return null;
 
             const round = await this.contract.rounds(this.lastBetEpoch);
-            const closeTimestamp = Number(round[3]);
+            const lockTimestamp = Number(round[2]); // When betting closes
+            const closeTimestamp = Number(round[3]); // When round ends (10s after lock)
             const lockPrice = Number(round[4]) / 1e8;
             
             const now = Math.floor(Date.now() / 1000);
-            const timeUntilClose = closeTimestamp - now;
+            const timeUntilLock = lockTimestamp - now;
 
-            // Only predict in the 15-25 second window before close
-            if (timeUntilClose > 25 || timeUntilClose < 15) {
+            console.log(`🔍 tryEarlyPrediction check: Round ${this.lastBetEpoch}, timeUntilLock: ${timeUntilLock}s (need 15-25s)`);
+
+            // Only predict in the 15-25 second window before LOCK (when betting closes)
+            if (timeUntilLock > 25 || timeUntilLock < 15) {
                 return null;
             }
 
