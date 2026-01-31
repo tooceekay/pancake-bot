@@ -49,7 +49,8 @@ class PancakePredictionBot {
             lastPredictionEpoch: null, // Which epoch we made the last prediction for
             skipNextRound: false,     // Flag to skip next round after uncertain prediction
             processedRounds: new Set(), // Track rounds we've already checked to prevent duplicate processing
-            shouldBetNow: false      // Flag to bypass timing check after confident prediction
+            shouldBetNow: false,      // Flag to bypass timing check after confident prediction
+            pendingWinClaims: new Map() // Track assumed wins that need verification: epoch → betAmount
         };
     }
 
@@ -471,6 +472,12 @@ class PancakePredictionBot {
             this.earlyPrediction.lastAssumedBet = betAmount;
             this.earlyPrediction.lastPredictionEpoch = this.lastBetEpoch;
             
+            // If assuming WIN, track this round for later claim verification
+            if (assumedWin) {
+                this.earlyPrediction.pendingWinClaims.set(this.lastBetEpoch, betAmount);
+                console.log(`📌 Tracking round ${this.lastBetEpoch} for win verification and claiming`);
+            }
+            
             console.log(
                 `🔮 CONFIDENT PREDICTION - Price movement ($${Math.abs(priceDiff).toFixed(2)}) EXCEEDS threshold ($${threshold})\n` +
                 `   Round ${this.lastBetEpoch} (${direction})\n` +
@@ -842,6 +849,73 @@ class PancakePredictionBot {
                     this.lastBetEpoch = epoch - 2; // Check the round before current
                     await this.checkPreviousRoundResult();
                     this.lastBetEpoch = oldLastBet; // Restore
+                }
+            }
+            
+            // VERIFY AND CLAIM PENDING ASSUMED WINS
+            if (this.config.earlyPrediction && this.earlyPrediction.pendingWinClaims.size > 0) {
+                for (const [roundEpoch, betAmt] of this.earlyPrediction.pendingWinClaims.entries()) {
+                    // Only check rounds that are 2+ epochs old (should be closed by now)
+                    if (roundEpoch < epoch - 1) {
+                        try {
+                            const round = await this.contract.rounds(roundEpoch);
+                            const closePrice = Number(round[5]);
+                            
+                            if (closePrice > 0) {
+                                // Round is closed, check if we actually won
+                                const ledger = await this.contract.ledger(roundEpoch, this.wallet.address);
+                                const position = Number(ledger[0]);
+                                const lockPrice = Number(round[4]) / 1e8;
+                                const closePriceUSD = closePrice / 1e8;
+                                
+                                const won = (position === 0 && closePriceUSD > lockPrice) || 
+                                           (position === 1 && closePriceUSD < lockPrice);
+                                
+                                if (won) {
+                                    // Assumption was correct! Claim winnings and clear real losses
+                                    console.log(`✅ VERIFIED WIN - Round ${roundEpoch} (assumed win was correct!)`);
+                                    
+                                    try {
+                                        const tx = await this.contract.claim([roundEpoch]);
+                                        await tx.wait();
+                                        console.log(`💰 Claimed winnings from round ${roundEpoch}`);
+                                        
+                                        // Clear real losses since we won
+                                        this.earlyPrediction.realLosses = 0;
+                                        
+                                        if (this.telegram) {
+                                            await this.telegram.sendMessage(
+                                                `✅ <b>Verified & Claimed Win</b>\n\n` +
+                                                `Round: ${roundEpoch}\n` +
+                                                `Assumption was correct!\n` +
+                                                `All losses cleared!`
+                                            );
+                                        }
+                                    } catch (e) {
+                                        console.error(`Claim error for round ${roundEpoch}:`, e.message);
+                                    }
+                                } else {
+                                    // Assumption was WRONG - we actually lost
+                                    console.log(`❌ VERIFIED LOSS - Round ${roundEpoch} (assumed win was WRONG!)`);
+                                    this.earlyPrediction.realLosses += betAmt;
+                                    
+                                    if (this.telegram) {
+                                        await this.telegram.sendMessage(
+                                            `❌ <b>Verified Loss</b>\n\n` +
+                                            `Round: ${roundEpoch}\n` +
+                                            `Assumed WIN but actually LOST\n` +
+                                            `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB`
+                                        );
+                                    }
+                                }
+                                
+                                // Remove from pending claims
+                                this.earlyPrediction.pendingWinClaims.delete(roundEpoch);
+                            }
+                        } catch (e) {
+                            console.error(`Error verifying round ${roundEpoch}:`, e.message);
+                        }
+                    }
                 }
             }
 
