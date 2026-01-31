@@ -3,7 +3,7 @@ import { TelegramNotifier, TelegramController } from './telegram-bot.js';
 import 'dotenv/config';
 
 const PREDICTION_CONTRACT = '0x18B2A687610328590Bc8F2e5fEdDe3b582A49cdA';
-const BET_TIMING_SECONDS = 20;
+const BET_TIMING_SECONDS = 240; // Bet any time up to 240 seconds before lock
 const POLLING_INTERVAL = 2000;
 
 const PREDICTION_ABI = [
