@@ -789,12 +789,15 @@ class PancakePredictionBot {
             
             // VERIFY PREVIOUS ROUND: In early prediction, check if last round closed while betting on new one
             if (this.config.earlyPrediction && this.lastBetEpoch && this.lastBetEpoch < epoch - 1 && !this.earlyPrediction.skipNextRound) {
-                // We're 2+ rounds ahead - check results of previous rounds asynchronously
-                console.log(`🔍 Verifying previous round ${this.lastBetEpoch} in background...`);
-                const oldLastBet = this.lastBetEpoch;
-                this.lastBetEpoch = epoch - 2; // Check the round before current
-                await this.checkPreviousRoundResult();
-                this.lastBetEpoch = oldLastBet; // Restore
+                // Only verify if we haven't already processed this round
+                if (!this.earlyPrediction.processedRounds.has(this.lastBetEpoch)) {
+                    // We're 2+ rounds ahead - check results of previous rounds asynchronously
+                    console.log(`🔍 Verifying previous round ${this.lastBetEpoch} in background...`);
+                    const oldLastBet = this.lastBetEpoch;
+                    this.lastBetEpoch = epoch - 2; // Check the round before current
+                    await this.checkPreviousRoundResult();
+                    this.lastBetEpoch = oldLastBet; // Restore
+                }
             }
 
             // Don't bet if already bet this round
