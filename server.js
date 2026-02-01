@@ -488,7 +488,7 @@ class PancakePredictionBot {
 
             if (this.telegram) {
                 await this.telegram.sendMessage(
-                    `🔮 <b>Confident Prediction</b>\n\n` +
+                    `🔮 <b>Confident ${assumedWin ? 'WIN ✅' : 'LOSS ❌'} Prediction</b>\n\n` +
                     `Round: ${this.lastBetEpoch}\n` +
                     `Direction: ${direction}\n` +
                     `Lock Price: $${lockPrice.toFixed(2)}\n` +
