@@ -1123,6 +1123,10 @@ class PancakePredictionBot {
         this.state.totalLost = 0;
         this.state.currentBet = this.config.baseBetAmount;
         
+        // Clear waiting state to avoid processing old rounds
+        this.waitingForResults = false;
+        this.lastBetEpoch = null;
+        
         // Reset early prediction state
         this.earlyPrediction.realLosses = 0;
         this.earlyPrediction.assumedLosses = 0;
@@ -1130,6 +1134,8 @@ class PancakePredictionBot {
         this.earlyPrediction.lastAssumedBet = 0;
         this.earlyPrediction.lastPredictionEpoch = null;
         this.earlyPrediction.skipNextRound = false;
+        this.earlyPrediction.pendingWinClaims.clear();
+        this.earlyPrediction.processedRounds.clear();
         
         if (this.telegram && oldLosses > 0) {
             this.telegram.sendMessage(
