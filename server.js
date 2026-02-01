@@ -873,7 +873,7 @@ class PancakePredictionBot {
                                            (position === 1 && closePriceUSD < lockPrice);
                                 
                                 if (won) {
-                                    // Assumption was correct! Claim winnings and clear real losses
+                                    // Assumption was correct! Claim winnings
                                     console.log(`✅ VERIFIED WIN - Round ${roundEpoch} (assumed win was correct!)`);
                                     
                                     try {
@@ -881,15 +881,21 @@ class PancakePredictionBot {
                                         await tx.wait();
                                         console.log(`💰 Claimed winnings from round ${roundEpoch}`);
                                         
-                                        // Clear real losses since we won
-                                        this.earlyPrediction.realLosses = 0;
+                                        // If this was a base bet (no losses to cover), clear all losses
+                                        const baseBet = parseFloat(this.config.baseBetAmount);
+                                        if (Math.abs(betAmt - baseBet) < 0.001) { // Base bet
+                                            console.log(`🎉 Base bet win - clearing all losses`);
+                                            this.earlyPrediction.realLosses = 0;
+                                            this.earlyPrediction.assumedLosses = 0;
+                                        }
                                         
                                         if (this.telegram) {
                                             await this.telegram.sendMessage(
                                                 `✅ <b>Verified & Claimed Win</b>\n\n` +
                                                 `Round: ${roundEpoch}\n` +
+                                                `Bet: ${betAmt.toFixed(4)} BNB\n` +
                                                 `Assumption was correct!\n` +
-                                                `All losses cleared!`
+                                                `${Math.abs(betAmt - baseBet) < 0.001 ? 'All losses cleared!' : 'Winnings claimed.'}`
                                             );
                                         }
                                     } catch (e) {
