@@ -425,26 +425,27 @@ class PancakePredictionBot {
             }
             
             // Calculate total losses to cover (real + assumed)
+            // These losses already include all previous bets that were lost
             let totalLossesToCover = this.earlyPrediction.realLosses + this.earlyPrediction.assumedLosses;
             
-            // Update assumed losses based on this prediction
-            if (assumedWin) {
-                // If we assume win, we'll recover losses, so next bet is base
-                this.earlyPrediction.assumedLosses = 0;
-            } else {
-                // If we assume loss, add current bet to assumed losses
-                this.earlyPrediction.assumedLosses += betAmount;
-                totalLossesToCover += betAmount;
-            }
-            
-            // Calculate next bet amount
+            // Calculate next bet amount FIRST (before updating assumed losses)
             let nextBet;
             if (assumedWin) {
                 // Assuming win → bet base amount
                 nextBet = parseFloat(this.config.baseBetAmount);
             } else {
-                // Assuming loss → need to cover all losses (real + assumed)
-                nextBet = totalLossesToCover * 2;
+                // Assuming loss → we expect to lose the current bet (betAmount)
+                // So next bet needs to cover: existing losses + this bet
+                nextBet = (totalLossesToCover + betAmount) * 2;
+            }
+            
+            // NOW update assumed losses for tracking (after calculating next bet)
+            if (assumedWin) {
+                // If we assume win, we'll recover losses, so clear assumed losses
+                this.earlyPrediction.assumedLosses = 0;
+            } else {
+                // If we assume loss, add current bet to assumed losses for tracking
+                this.earlyPrediction.assumedLosses += betAmount;
             }
             
             // Check if next bet exceeds max allowed
@@ -881,13 +882,9 @@ class PancakePredictionBot {
                                         await tx.wait();
                                         console.log(`💰 Claimed winnings from round ${roundEpoch}`);
                                         
-                                        // If this was a base bet (no losses to cover), clear all losses
-                                        const baseBet = parseFloat(this.config.baseBetAmount);
-                                        if (Math.abs(betAmt - baseBet) < 0.001) { // Base bet
-                                            console.log(`🎉 Base bet win - clearing all losses`);
-                                            this.earlyPrediction.realLosses = 0;
-                                            this.earlyPrediction.assumedLosses = 0;
-                                        }
+                                        // DON'T clear losses in background verification!
+                                        // Losses are managed in the main prediction flow.
+                                        // Background verification only claims winnings.
                                         
                                         if (this.telegram) {
                                             await this.telegram.sendMessage(
@@ -895,7 +892,7 @@ class PancakePredictionBot {
                                                 `Round: ${roundEpoch}\n` +
                                                 `Bet: ${betAmt.toFixed(4)} BNB\n` +
                                                 `Assumption was correct!\n` +
-                                                `${Math.abs(betAmt - baseBet) < 0.001 ? 'All losses cleared!' : 'Winnings claimed.'}`
+                                                `Winnings claimed.`
                                             );
                                         }
                                     } catch (e) {
@@ -906,20 +903,19 @@ class PancakePredictionBot {
                                     console.log(`❌ VERIFIED LOSS - Round ${roundEpoch} (assumed win was WRONG!)`);
                                     this.earlyPrediction.realLosses += betAmt;
                                     
-                                    // Recalculate the current bet to cover the newly verified losses
+                                    // Don't recalculate state.currentBet here - it will be calculated correctly
+                                    // in the next early prediction using the updated realLosses
                                     const totalLosses = this.earlyPrediction.realLosses + this.earlyPrediction.assumedLosses;
-                                    const correctedBet = (totalLosses * 2).toFixed(6);
-                                    this.state.currentBet = correctedBet;
-                                    
-                                    console.log(`📈 Correcting bet amount to ${correctedBet} BNB to cover ${totalLosses.toFixed(4)} BNB total losses`);
+                                    console.log(`📈 Total losses now: ${totalLosses.toFixed(4)} BNB (will be factored into next bet calculation)`);
                                     
                                     if (this.telegram) {
                                         await this.telegram.sendMessage(
                                             `❌ <b>Verified Loss</b>\n\n` +
                                             `Round: ${roundEpoch}\n` +
                                             `Assumed WIN but actually LOST\n` +
+                                            `Bet: ${betAmt.toFixed(4)} BNB\n` +
                                             `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB\n` +
-                                            `Next bet corrected to: ${correctedBet} BNB`
+                                            `Total losses: ${totalLosses.toFixed(4)} BNB`
                                         );
                                     }
                                 }
