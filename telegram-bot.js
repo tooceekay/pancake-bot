@@ -209,7 +209,7 @@ export class TelegramController {
 
             if (this.callbacks.start) {
                 const result = await this.callbacks.start();
-                await this.bot.sendMessage(chatId, result);
+                await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
             }
         });
 
