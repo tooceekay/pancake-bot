@@ -685,9 +685,9 @@ class PancakePredictionBot {
                 } else {
                     // We lost - add to real losses
                     this.earlyPrediction.realLosses += betAmount;
-                    // DON'T clear assumed losses - they're still pending from other rounds
+                    // Assumed losses should have been converted during skip, but keep them just in case
                     
-                    // Calculate next bet to cover losses
+                    // Calculate next bet to cover all losses
                     const totalLosses = this.earlyPrediction.realLosses + this.earlyPrediction.assumedLosses;
                     const nextBet = (totalLosses * 2).toFixed(6);
                     this.state.currentBet = nextBet;
@@ -845,6 +845,59 @@ class PancakePredictionBot {
                 // We're in the "skip round" - check if previous round is closed
                 if (this.lastBetEpoch && this.lastBetEpoch < epoch) {
                     console.log(`🔍 Skip round active - verifying results from round ${this.lastBetEpoch}`);
+                    
+                    // FIRST: Verify any pending assumed outcomes from earlier rounds
+                    if (this.earlyPrediction.lastPredictionEpoch && 
+                        this.earlyPrediction.lastPredictionEpoch < this.lastBetEpoch) {
+                        
+                        const predictionEpoch = this.earlyPrediction.lastPredictionEpoch;
+                        console.log(`🔍 Also verifying assumed outcome for round ${predictionEpoch}`);
+                        
+                        try {
+                            const round = await this.contract.rounds(predictionEpoch);
+                            const closePrice = Number(round[5]);
+                            
+                            if (closePrice > 0) {
+                                const ledger = await this.contract.ledger(predictionEpoch, this.wallet.address);
+                                const position = Number(ledger[0]);
+                                const lockPrice = Number(round[4]);
+                                const betAmt = parseFloat(ethers.formatEther(ledger[1]));
+                                
+                                const won = (position === 0 && closePrice > lockPrice) || 
+                                           (position === 1 && closePrice < lockPrice);
+                                
+                                const assumedWin = this.earlyPrediction.lastAssumedOutcome === 'win';
+                                
+                                if (won) {
+                                    // Actually won - clear assumed losses
+                                    console.log(`✅ Round ${predictionEpoch} WON (assumption was ${assumedWin ? 'correct' : 'WRONG'})`);
+                                    this.earlyPrediction.assumedLosses = 0;
+                                    
+                                    // Claim winnings
+                                    try {
+                                        const tx = await this.contract.claim([predictionEpoch]);
+                                        await tx.wait();
+                                        console.log(`💰 Claimed winnings from round ${predictionEpoch}`);
+                                    } catch (e) {
+                                        console.log(`Already claimed or error: ${e.message}`);
+                                    }
+                                } else {
+                                    // Actually lost - convert assumed to real
+                                    console.log(`❌ Round ${predictionEpoch} LOST (assumption was ${assumedWin ? 'WRONG' : 'correct'})`);
+                                    this.earlyPrediction.realLosses += this.earlyPrediction.assumedLosses;
+                                    this.earlyPrediction.assumedLosses = 0;
+                                }
+                                
+                                // Clear the prediction tracking
+                                this.earlyPrediction.lastPredictionEpoch = null;
+                                this.earlyPrediction.lastAssumedOutcome = null;
+                            }
+                        } catch (e) {
+                            console.error(`Error verifying round ${predictionEpoch}:`, e.message);
+                        }
+                    }
+                    
+                    // THEN: Check the current round result
                     const resultsReady = await this.checkPreviousRoundResult();
                     if (resultsReady) {
                         // Results verified - clear skip flag and continue normally next round
