@@ -132,7 +132,18 @@ class PancakePredictionBot {
                 return '⚠️ Bot is already running!';
             }
             this.start();
-            return '🤖 Bot started!';
+            
+            // Show settings after starting
+            const maxLosses = this.config.maxDoubleDowns + 1;
+            return `🤖 <b>BOT STARTED</b>\n\n` +
+                   `<b>⚙️ Current Settings</b>\n\n` +
+                   `💰 Base Bet: ${this.config.baseBetAmount} BNB\n` +
+                   `🎯 Max Double-Downs: ${this.config.maxDoubleDowns}\n` +
+                   `📊 Direction: ${this.config.betDirection}\n` +
+                   `🔮 Early Prediction: ${this.config.earlyPrediction ? 'ON' : 'OFF'}\n` +
+                   `📈 Prediction Threshold: $${this.config.predictionThreshold}\n` +
+                   `🛑 Max Early Prediction Bet: ${this.config.maxEarlyPredictionBet} BNB\n\n` +
+                   `⚡ Ready to trade!`;
         });
 
         this.telegramController.onStop(async () => {
@@ -141,19 +152,6 @@ class PancakePredictionBot {
             }
             this.stop('Manual stop via Telegram');
             return '🛑 Bot stopped!';
-        });
-
-        this.telegramController.onStatus(async () => {
-            const status = this.isRunning ? '🟢 RUNNING' : '🔴 STOPPED';
-            const waiting = this.waitingForResults ? '⏳ Waiting for results...' : '✅ Ready to bet';
-            const maxLosses = this.config.maxDoubleDowns + 1; // Base bet + doubles
-            
-            return `<b>BOT STATUS</b>\n\n` +
-                   `Status: ${status}\n` +
-                   `State: ${waiting}\n` +
-                   `Balance: ${this.state.balance} BNB\n` +
-                   `Next Bet: ${this.state.currentBet} BNB\n` +
-                   `Loss Streak: ${this.state.consecutiveLosses}/${maxLosses}`;
         });
 
         this.telegramController.onBalance(async () => {
@@ -186,18 +184,33 @@ class PancakePredictionBot {
         });
 
         this.telegramController.onSettings(async () => {
-            let msg = `⚙️ <b>Current Settings</b>\n\n` +
-                   `💰 Base Bet: ${this.config.baseBetAmount} BNB\n` +
-                   `🎯 Max Double-Downs: ${this.config.maxDoubleDowns}\n` +
-                   `📊 Direction: ${this.config.betDirection}\n` +
-                   `🔮 Early Prediction: ${this.config.earlyPrediction ? 'ON' : 'OFF'}\n`;
+            // Status section
+            const status = this.isRunning ? '🟢 RUNNING' : '🔴 STOPPED';
+            const waiting = this.waitingForResults ? '⏳ Waiting for results' : '✅ Ready to bet';
+            const maxLosses = this.config.maxDoubleDowns + 1; // Base bet + doubles
+            
+            let msg = `<b>🤖 BOT STATUS & SETTINGS</b>\n\n`;
+            
+            // Status info
+            msg += `<b>Status:</b> ${status}\n`;
+            msg += `<b>State:</b> ${waiting}\n`;
+            msg += `<b>Balance:</b> ${this.state.balance} BNB\n`;
+            msg += `<b>Next Bet:</b> ${this.state.currentBet} BNB\n`;
+            msg += `<b>Loss Streak:</b> ${this.state.consecutiveLosses}/${maxLosses}\n\n`;
+            
+            // Settings info
+            msg += `<b>⚙️ Configuration</b>\n\n`;
+            msg += `💰 Base Bet: ${this.config.baseBetAmount} BNB\n`;
+            msg += `🎯 Max Double-Downs: ${this.config.maxDoubleDowns}\n`;
+            msg += `📊 Direction: ${this.config.betDirection}\n`;
+            msg += `🔮 Early Prediction: ${this.config.earlyPrediction ? 'ON' : 'OFF'}\n`;
             
             if (this.config.earlyPrediction) {
-                msg += `📈 Prediction Threshold: $${this.config.predictionThreshold}\n` +
-                       `🛑 Max Early Prediction Bet: ${this.config.maxEarlyPredictionBet} BNB\n`;
+                msg += `📈 Prediction Threshold: $${this.config.predictionThreshold}\n`;
+                msg += `🛑 Max Early Prediction Bet: ${this.config.maxEarlyPredictionBet} BNB\n`;
             }
             
-            msg += `\nUse /setbet, /setmax, etc. to change settings.`;
+            msg += `\n<i>Use /setbet, /setmax, etc. to change settings.</i>`;
             return msg;
         });
 
@@ -1179,12 +1192,12 @@ async function main() {
     const config = {
         privateKey: process.env.PRIVATE_KEY,
         rpcUrl: process.env.RPC_URL || 'https://bsc-dataseed.binance.org/',
-        baseBetAmount: process.env.BASE_BET_AMOUNT || '0.003',
-        maxDoubleDowns: parseInt(process.env.MAX_DOUBLE_DOWNS || '7'),
+        baseBetAmount: process.env.BASE_BET_AMOUNT || '0.02',
+        maxDoubleDowns: parseInt(process.env.MAX_DOUBLE_DOWNS || '3'),
         betDirection: process.env.BET_DIRECTION || 'RANDOM', // BULL, BEAR, or RANDOM
-        earlyPrediction: process.env.EARLY_PREDICTION === 'true',
+        earlyPrediction: process.env.EARLY_PREDICTION !== 'false', // Default ON
         predictionThreshold: process.env.PREDICTION_THRESHOLD || '0.20',
-        maxEarlyPredictionBet: process.env.MAX_EARLY_PREDICTION_BET || '1.0',
+        maxEarlyPredictionBet: process.env.MAX_EARLY_PREDICTION_BET || '0.36',
         telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
         telegramChatId: process.env.TELEGRAM_CHAT_ID
     };
