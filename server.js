@@ -568,6 +568,9 @@ class PancakePredictionBot {
                     this.earlyPrediction.realLosses = 0;
                     this.earlyPrediction.assumedLosses = 0;
                     
+                    // Reset bet to base amount
+                    this.state.currentBet = this.config.baseBetAmount;
+                    
                     console.log(`🎉 WON! Round ${this.lastBetEpoch} - All losses cleared`);
                     
                     // Claim winnings
@@ -637,6 +640,9 @@ class PancakePredictionBot {
                     // We won - clear all losses
                     this.earlyPrediction.realLosses = 0;
                     this.earlyPrediction.assumedLosses = 0;
+                    
+                    // Reset bet to base amount
+                    this.state.currentBet = this.config.baseBetAmount;
                     
                     console.log(`🎉 WON! Round ${this.lastBetEpoch} - All losses cleared`);
                     
