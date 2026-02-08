@@ -228,7 +228,7 @@ export class TelegramController {
             }
         });
 
-        // /status command
+        // /status command (merged with settings)
         this.bot.onText(/\/status/, async (msg) => {
             const chatId = msg.chat.id;
             
@@ -237,8 +237,8 @@ export class TelegramController {
                 return;
             }
 
-            if (this.callbacks.status) {
-                const result = await this.callbacks.status();
+            if (this.callbacks.settings) {
+                const result = await this.callbacks.settings();
                 await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
             }
         });
@@ -285,15 +285,14 @@ export class TelegramController {
                 `/reset - Reset bet sequence to base\n` +
                 `/continue - Continue current streak\n\n` +
                 `<b>Settings:</b>\n` +
-                `/setbet [amount] - Set base bet (e.g. /setbet 0.01)\n` +
-                `/setmax [number] - Set max double-downs (e.g. /setmax 5)\n` +
+                `/setbet [amount] - Set base bet (e.g. /setbet 0.02)\n` +
+                `/setmax [number] - Set max double-downs (e.g. /setmax 3)\n` +
                 `/setdirection [dir] - Set direction (BULL/BEAR/RANDOM)\n` +
                 `/setprediction [on/off] - Toggle early prediction\n` +
                 `/setthreshold [amount] - Set prediction threshold\n` +
                 `/setmaxepbet [amount] - Set max early prediction bet\n` +
-                `/settings - View current settings\n\n` +
+                `/settings - View status & settings (or /status)\n\n` +
                 `<b>Info:</b>\n` +
-                `/status - Check bot status\n` +
                 `/balance - Check wallet balance\n` +
                 `/stats - View trading statistics\n` +
                 `/commands - Show this help message\n` +
@@ -314,15 +313,14 @@ export class TelegramController {
                 `/reset - Reset bet sequence to base\n` +
                 `/continue - Continue current streak\n\n` +
                 `<b>Settings:</b>\n` +
-                `/setbet [amount] - Set base bet (e.g. /setbet 0.01)\n` +
-                `/setmax [number] - Set max double-downs (e.g. /setmax 5)\n` +
+                `/setbet [amount] - Set base bet (e.g. /setbet 0.02)\n` +
+                `/setmax [number] - Set max double-downs (e.g. /setmax 3)\n` +
                 `/setdirection [dir] - Set direction (BULL/BEAR/RANDOM)\n` +
                 `/setprediction [on/off] - Toggle early prediction\n` +
                 `/setthreshold [amount] - Set prediction threshold\n` +
                 `/setmaxepbet [amount] - Set max early prediction bet\n` +
-                `/settings - View current settings\n\n` +
+                `/settings - View status & settings (or /status)\n\n` +
                 `<b>Info:</b>\n` +
-                `/status - Check bot status\n` +
                 `/balance - Check wallet balance\n` +
                 `/stats - View trading statistics\n` +
                 `/commands - Show this help message\n` +
