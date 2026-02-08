@@ -888,9 +888,19 @@ class PancakePredictionBot {
                                         await tx.wait();
                                         console.log(`💰 Claimed winnings from round ${roundEpoch}`);
                                         
-                                        // DON'T clear losses in background verification!
-                                        // Losses are managed in the main prediction flow.
-                                        // Background verification only claims winnings.
+                                        // Clear losses ONLY if this was a Martingale recovery bet (not base bet)
+                                        // Base bets might have been placed after newer losses were recorded
+                                        const baseBet = parseFloat(this.config.baseBetAmount);
+                                        const wasMartingaleBet = betAmt > baseBet + 0.001;
+                                        
+                                        if (wasMartingaleBet) {
+                                            console.log(`🎉 Martingale recovery bet won - clearing losses`);
+                                            this.earlyPrediction.realLosses = 0;
+                                            this.earlyPrediction.assumedLosses = 0;
+                                            this.state.currentBet = this.config.baseBetAmount;
+                                        } else {
+                                            console.log(`Base bet won - keeping current loss tracking intact`);
+                                        }
                                         
                                         if (this.telegram) {
                                             await this.telegram.sendMessage(
@@ -898,7 +908,7 @@ class PancakePredictionBot {
                                                 `Round: ${roundEpoch}\n` +
                                                 `Bet: ${betAmt.toFixed(4)} BNB\n` +
                                                 `Assumption was correct!\n` +
-                                                `Winnings claimed.`
+                                                `${wasMartingaleBet ? 'All losses cleared!' : 'Winnings claimed.'}`
                                             );
                                         }
                                     } catch (e) {
