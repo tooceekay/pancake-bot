@@ -461,24 +461,34 @@ class PancakePredictionBot {
                 this.earlyPrediction.assumedLosses += betAmount;
             }
             
-            // Check if next bet exceeds max allowed
-            const maxBet = parseFloat(this.config.maxEarlyPredictionBet);
-            if (nextBet > maxBet) {
-                console.log(`🛑 STOPPING: Next bet (${nextBet.toFixed(4)} BNB) exceeds max (${maxBet} BNB)`);
-                
-                if (this.telegram) {
-                    await this.telegram.sendMessage(
-                        `🛑 <b>Bot Stopped</b>\n\n` +
-                        `Reason: Next bet would exceed maximum\n` +
-                        `Required bet: ${nextBet.toFixed(4)} BNB\n` +
-                        `Maximum allowed: ${maxBet} BNB\n` +
-                        `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB\n` +
-                        `Assumed losses: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB`
-                    );
+            // Check if next bet exceeds max allowed - BUT ONLY IF WE'RE PREDICTING A LOSS
+            // If we're predicting a WIN, next bet will be base bet (no problem)
+            if (!assumedWin) {
+                const maxBet = parseFloat(this.config.maxEarlyPredictionBet);
+                if (nextBet > maxBet) {
+                    console.log(`🛑 STOPPING: Predicted LOSS, and next bet (${nextBet.toFixed(4)} BNB) would exceed max (${maxBet} BNB)`);
+                    
+                    // Send the prediction message first so user knows what was predicted
+                    if (this.telegram) {
+                        await this.telegram.sendMessage(
+                            `🔮 <b>Confident LOSS ❌ Prediction</b>\n\n` +
+                            `Round: ${this.lastBetEpoch}\n` +
+                            `Direction: ${direction}\n` +
+                            `Lock Price: $${lockPrice.toFixed(2)}\n` +
+                            `Current Price: $${currentPrice.toFixed(2)}\n` +
+                            `Price movement: ${priceDiff > 0 ? '+' : ''}$${priceDiff.toFixed(2)}\n` +
+                            `Threshold: ±$${threshold}\n` +
+                            `Assumption: LOSS ❌\n` +
+                            `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB\n` +
+                            `Assumed losses: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB\n` +
+                            `Next bet would be: ${nextBet.toFixed(4)} BNB\n\n` +
+                            `🛑 <b>Stopping - exceeds max bet of ${maxBet} BNB</b>`
+                        );
+                    }
+                    
+                    await this.stop('Next bet would exceed maximum');
+                    return null;
                 }
-                
-                await this.stop();
-                return null;
             }
             
             // Store prediction details
