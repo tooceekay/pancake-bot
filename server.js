@@ -985,10 +985,12 @@ class PancakePredictionBot {
                                     console.log(`❌ VERIFIED LOSS - Round ${roundEpoch} (assumed win was WRONG!)`);
                                     this.earlyPrediction.realLosses += betAmt;
                                     
-                                    // Don't recalculate state.currentBet here - it will be calculated correctly
-                                    // in the next early prediction using the updated realLosses
+                                    // Recalculate the bet to cover the newly discovered losses
                                     const totalLosses = this.earlyPrediction.realLosses + this.earlyPrediction.assumedLosses;
-                                    console.log(`📈 Total losses now: ${totalLosses.toFixed(4)} BNB (will be factored into next bet calculation)`);
+                                    const correctedBet = (totalLosses * 2).toFixed(6);
+                                    this.state.currentBet = correctedBet;
+                                    
+                                    console.log(`📈 Total losses now: ${totalLosses.toFixed(4)} BNB, next bet corrected to: ${correctedBet} BNB`);
                                     
                                     if (this.telegram) {
                                         await this.telegram.sendMessage(
@@ -997,7 +999,8 @@ class PancakePredictionBot {
                                             `Assumed WIN but actually LOST\n` +
                                             `Bet: ${betAmt.toFixed(4)} BNB\n` +
                                             `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB\n` +
-                                            `Total losses: ${totalLosses.toFixed(4)} BNB`
+                                            `Total losses: ${totalLosses.toFixed(4)} BNB\n` +
+                                            `Next bet: ${correctedBet} BNB`
                                         );
                                     }
                                 }
