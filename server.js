@@ -970,22 +970,41 @@ class PancakePredictionBot {
                                         const wasMartingaleBet = betAmt > baseBet + 0.001;
                                         
                                         if (wasMartingaleBet) {
-                                            console.log(`🎉 Martingale recovery bet won - clearing losses`);
+                                            console.log(`🎉 Martingale recovery bet won - clearing REAL losses only`);
                                             this.earlyPrediction.realLosses = 0;
-                                            this.earlyPrediction.assumedLosses = 0;
-                                            this.state.currentBet = this.config.baseBetAmount;
+                                            // DON'T clear assumedLosses - they're from rounds that haven't closed yet
+                                            // and weren't the reason for this Martingale bet
+                                            
+                                            // Recalculate current bet based on remaining assumed losses
+                                            if (this.earlyPrediction.assumedLosses > 0) {
+                                                this.state.currentBet = (this.earlyPrediction.assumedLosses * 2).toFixed(6);
+                                                console.log(`Assumed losses remain: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB, next bet: ${this.state.currentBet} BNB`);
+                                            } else {
+                                                this.state.currentBet = this.config.baseBetAmount;
+                                            }
                                         } else {
                                             console.log(`Base bet won - keeping current loss tracking intact`);
                                         }
                                         
                                         if (this.telegram) {
-                                            await this.telegram.sendMessage(
-                                                `✅ <b>Verified & Claimed Win</b>\n\n` +
+                                            let message = `✅ <b>Verified & Claimed Win</b>\n\n` +
                                                 `Round: ${roundEpoch}\n` +
                                                 `Bet: ${betAmt.toFixed(4)} BNB\n` +
-                                                `Assumption was correct!\n` +
-                                                `${wasMartingaleBet ? 'All losses cleared!' : 'Winnings claimed.'}`
-                                            );
+                                                `Assumption was correct!\n`;
+                                            
+                                            if (wasMartingaleBet) {
+                                                message += `Real losses cleared!\n`;
+                                                if (this.earlyPrediction.assumedLosses > 0) {
+                                                    message += `Assumed losses: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB (pending)\n`;
+                                                    message += `Next bet: ${this.state.currentBet} BNB`;
+                                                } else {
+                                                    message += `All losses cleared!`;
+                                                }
+                                            } else {
+                                                message += `Winnings claimed.`;
+                                            }
+                                            
+                                            await this.telegram.sendMessage(message);
                                         }
                                     } catch (e) {
                                         console.error(`Claim error for round ${roundEpoch}:`, e.message);
