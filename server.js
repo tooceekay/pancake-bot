@@ -454,7 +454,8 @@ class PancakePredictionBot {
             
             // NOW update assumed losses for tracking (after calculating next bet)
             if (assumedWin) {
-                // If we assume win, we'll recover losses, so clear assumed losses
+                // If we assume win, we'll recover losses, so clear ALL losses
+                this.earlyPrediction.realLosses = 0;
                 this.earlyPrediction.assumedLosses = 0;
             } else {
                 // If we assume loss, add current bet to assumed losses for tracking
