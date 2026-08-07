@@ -15,6 +15,7 @@ const PREDICTION_ABI = [
     'function rounds(uint256 epoch) external view returns (uint256 epoch, uint256 startTimestamp, uint256 lockTimestamp, uint256 closeTimestamp, int256 lockPrice, int256 closePrice, uint256 lockOracleId, uint256 closeOracleId, uint256 totalAmount, uint256 bullAmount, uint256 bearAmount, uint256 rewardBaseCalAmount, uint256 rewardAmount, bool oracleCalled)',
     'function ledger(uint256 epoch, address user) external view returns (uint8 position, uint256 amount, bool claimed)',
     'function getUserRounds(address user, uint256 cursor, uint256 size) external view returns (uint256[] memory, tuple(uint8 position, uint256 amount, bool claimed)[] memory, uint256)',
+    'function getUserRoundsLength(address user) external view returns (uint256)',
 ];
 
 class PancakePredictionBot {
@@ -174,8 +175,8 @@ class PancakePredictionBot {
             return '✅ Sequence reset! Next /start will use base bet.';
         });
 
-        this.telegramController.onClaim(async () => {
-            return await this.claimAllWinnings();
+        this.telegramController.onClaim(async (specificRound = null) => {
+            return await this.claimAllWinnings(specificRound);
         });
 
         this.telegramController.onContinue(async () => {
@@ -1230,39 +1231,117 @@ class PancakePredictionBot {
         }
     }
 
-    async claimAllWinnings() {
+    async claimAllWinnings(specificRound = null) {
         try {
+            const userAddress = this.wallet.address;
+            
+            // DIRECT CLAIM: user gave a specific round number.
+            // Skip all scanning and just try to claim that round.
+            if (specificRound !== null) {
+                console.log(`🎯 Direct claim requested for round ${specificRound}`);
+                
+                // First check if it's claimable, and report clearly if not
+                let isClaimable = false;
+                try {
+                    isClaimable = await this.contract.claimable(specificRound, userAddress);
+                } catch (e) {
+                    return `❌ <b>Error checking round ${specificRound}</b>\n\n${e.message}`;
+                }
+                
+                if (!isClaimable) {
+                    // Dig into WHY it's not claimable to give a useful answer
+                    let detail = '';
+                    try {
+                        const ledger = await this.contract.ledger(specificRound, userAddress);
+                        const betAmt = parseFloat(ethers.formatEther(ledger[1]));
+                        const claimed = ledger[2];
+                        const round = await this.contract.rounds(specificRound);
+                        const lockPrice = Number(round[4]);
+                        const closePrice = Number(round[5]);
+                        const oracleCalled = round[13];
+                        
+                        if (betAmt === 0) {
+                            detail = `You have no bet recorded on round ${specificRound} with this wallet.\nWallet: <code>${userAddress}</code>`;
+                        } else if (claimed) {
+                            detail = `Round ${specificRound} was already claimed.`;
+                        } else if (!oracleCalled || closePrice === 0) {
+                            detail = `Round ${specificRound} hasn't been finalized on-chain yet. Wait a minute and retry.`;
+                        } else if (lockPrice === closePrice) {
+                            detail = `Round ${specificRound} was a TIE (lock price = close price), which the house wins. Nothing to claim.`;
+                        } else {
+                            detail = `Round ${specificRound} was a loss (your prediction was wrong).`;
+                        }
+                    } catch (e) {
+                        detail = `Could not read round details: ${e.message}`;
+                    }
+                    
+                    return `⚠️ <b>Round ${specificRound} Not Claimable</b>\n\n${detail}`;
+                }
+                
+                // It's claimable - claim it
+                try {
+                    const balanceBefore = await this.provider.getBalance(userAddress);
+                    const tx = await this.contract.claim([specificRound]);
+                    await tx.wait();
+                    const balanceAfter = await this.provider.getBalance(userAddress);
+                    const netReceived = parseFloat(ethers.formatEther(balanceAfter - balanceBefore));
+                    this.state.balance = ethers.formatEther(balanceAfter);
+                    
+                    return `💰 <b>Claimed Round ${specificRound}</b>\n\n` +
+                           `Net received: ${netReceived.toFixed(6)} BNB (after gas)\n` +
+                           `New balance: ${this.state.balance} BNB`;
+                } catch (e) {
+                    return `❌ <b>Claim failed for round ${specificRound}</b>\n\n${e.message}`;
+                }
+            }
+            
             console.log('🔍 Scanning for unclaimed winnings...');
             
             // Use getUserRounds() - the same contract function the PancakeSwap
-            // frontend uses. It returns ONLY the rounds you actually participated in,
-            // so we don't have to scan the blockchain round-by-round.
-            const userAddress = this.wallet.address;
+            // frontend uses. It returns ONLY the rounds you actually participated in.
             const allEpochs = [];
-            
-            // Paginate through getUserRounds. It returns each round the user played
-            // along with a "claimed" flag. We keep ALL rounds (claimed or not) so we
-            // can report accurately, but track how many were already claimed.
-            let cursor = 0;
-            const PAGE_SIZE = 1000;
-            const MAX_PAGES = 5; // up to 5000 rounds of history
             let alreadyClaimedCount = 0;
             const unclaimedEpochs = [];
             
-            for (let page = 0; page < MAX_PAGES; page++) {
+            // IMPORTANT: getUserRounds reads OLDEST-first (cursor 0 = your first-ever bet).
+            // Unclaimed wins are almost always recent, so we must read from the END.
+            // First get the total count, then page BACKWARD from the newest rounds.
+            let totalRounds = 0;
+            try {
+                totalRounds = Number(await this.contract.getUserRoundsLength(userAddress));
+            } catch (e) {
+                console.error(`getUserRoundsLength failed: ${e.message}`);
+            }
+            
+            if (totalRounds === 0) {
+                return `⚠️ <b>No Rounds Found</b>\n\n` +
+                       `This wallet has no prediction history, or the RPC is lagging.\n` +
+                       `Wallet: <code>${userAddress}</code>`;
+            }
+            
+            console.log(`User has ${totalRounds} total rounds. Reading newest first...`);
+            
+            // Read the most recent rounds, working backward from the end.
+            // We scan up to 5000 of the NEWEST rounds (unclaimed wins won't be older than that).
+            const PAGE_SIZE = 1000;
+            const MAX_ROUNDS_TO_SCAN = 5000;
+            const scanFrom = Math.max(0, totalRounds - MAX_ROUNDS_TO_SCAN);
+            
+            // Page from scanFrom up to totalRounds, in chunks
+            let cursor = scanFrom;
+            while (cursor < totalRounds) {
+                const size = Math.min(PAGE_SIZE, totalRounds - cursor);
                 try {
-                    const result = await this.contract.getUserRounds(userAddress, cursor, PAGE_SIZE);
-                    const epochs = result[0];   // uint256[] of epochs
-                    const betInfos = result[1]; // BetInfo[] (position, amount, claimed)
-                    const nextCursor = result[2];
+                    const result = await this.contract.getUserRounds(userAddress, cursor, size);
+                    const epochs = result[0];
+                    const betInfos = result[1];
                     
                     if (epochs.length === 0) break;
                     
                     for (let i = 0; i < epochs.length; i++) {
                         const ep = Number(epochs[i]);
                         allEpochs.push(ep);
-                        // BetInfo tuple: [position, amount, claimed]
-                        const claimed = betInfos[i][2];
+                        const claimed = betInfos[i][2]; // BetInfo: [position, amount, claimed]
                         if (claimed) {
                             alreadyClaimedCount++;
                         } else {
@@ -1270,22 +1349,20 @@ class PancakePredictionBot {
                         }
                     }
                     
-                    if (epochs.length < PAGE_SIZE) break;
-                    cursor = Number(nextCursor);
+                    cursor += epochs.length;
                 } catch (e) {
-                    console.error(`Error fetching user rounds page ${page}: ${e.message}`);
-                    // If pagination fails, work with what we have rather than giving up
-                    break;
+                    console.error(`Error fetching rounds at cursor ${cursor}: ${e.message}`);
+                    cursor += size; // skip this chunk and continue
                 }
             }
             
             if (allEpochs.length === 0) {
-                return `⚠️ <b>No Rounds Found</b>\n\n` +
-                       `getUserRounds returned nothing for this wallet.\n` +
-                       `If you're sure you have a win, the RPC may be lagging — try again in a moment.`;
+                return `⚠️ <b>No Rounds Read</b>\n\n` +
+                       `Wallet has ${totalRounds} rounds but none could be read.\n` +
+                       `The RPC may be lagging — try again in a moment.`;
             }
             
-            console.log(`Total rounds: ${allEpochs.length}, already claimed: ${alreadyClaimedCount}, unclaimed: ${unclaimedEpochs.length}`);
+            console.log(`Read ${allEpochs.length} rounds, already claimed: ${alreadyClaimedCount}, unclaimed: ${unclaimedEpochs.length}`);
             
             // Decide which rounds to check for claimability.
             // Normally we only need to check the unclaimed ones. But if the claimed-flag

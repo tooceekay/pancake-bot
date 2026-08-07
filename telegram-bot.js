@@ -288,7 +288,8 @@ export class TelegramController {
                 `/stop - Stop trading bot\n` +
                 `/reset - Reset bet sequence to base\n` +
                 `/continue - Continue current streak\n` +
-                `/claim - Claim all unclaimed winnings\n\n` +
+                `/claim - Claim all unclaimed winnings\n` +
+                `/claim [round] - Claim a specific round\n\n` +
                 `<b>Settings:</b>\n` +
                 `/setbet [amount] - Set base bet (e.g. /setbet 0.02)\n` +
                 `/setmax [number] - Set max double-downs (e.g. /setmax 3)\n` +
@@ -317,7 +318,8 @@ export class TelegramController {
                 `/stop - Stop trading bot\n` +
                 `/reset - Reset bet sequence to base\n` +
                 `/continue - Continue current streak\n` +
-                `/claim - Claim all unclaimed winnings\n\n` +
+                `/claim - Claim all unclaimed winnings\n` +
+                `/claim [round] - Claim a specific round\n\n` +
                 `<b>Settings:</b>\n` +
                 `/setbet [amount] - Set base bet (e.g. /setbet 0.02)\n` +
                 `/setmax [number] - Set max double-downs (e.g. /setmax 3)\n` +
@@ -350,8 +352,8 @@ export class TelegramController {
             }
         });
 
-        // /claim command - claim all unclaimed winning rounds
-        this.bot.onText(/\/claim/, async (msg) => {
+        // /claim command - claim all unclaimed winning rounds, or a specific round
+        this.bot.onText(/\/claim(?:\s+(\d+))?/, async (msg, match) => {
             const chatId = msg.chat.id;
             
             if (!this.isAuthorized(chatId)) {
@@ -359,9 +361,15 @@ export class TelegramController {
                 return;
             }
 
+            const specificRound = match && match[1] ? parseInt(match[1]) : null;
+
             if (this.callbacks.claim) {
-                await this.bot.sendMessage(chatId, '🔍 Scanning for unclaimed winnings...', { parse_mode: 'HTML' });
-                const result = await this.callbacks.claim();
+                if (specificRound) {
+                    await this.bot.sendMessage(chatId, `🔍 Claiming round ${specificRound}...`, { parse_mode: 'HTML' });
+                } else {
+                    await this.bot.sendMessage(chatId, '🔍 Scanning for unclaimed winnings...', { parse_mode: 'HTML' });
+                }
+                const result = await this.callbacks.claim(specificRound);
                 await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
             }
         });
