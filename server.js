@@ -14,6 +14,7 @@ const PREDICTION_ABI = [
     'function currentEpoch() external view returns (uint256)',
     'function rounds(uint256 epoch) external view returns (uint256 epoch, uint256 startTimestamp, uint256 lockTimestamp, uint256 closeTimestamp, int256 lockPrice, int256 closePrice, uint256 lockOracleId, uint256 closeOracleId, uint256 totalAmount, uint256 bullAmount, uint256 bearAmount, uint256 rewardBaseCalAmount, uint256 rewardAmount, bool oracleCalled)',
     'function ledger(uint256 epoch, address user) external view returns (uint8 position, uint256 amount, bool claimed)',
+    'function getUserRounds(address user, uint256 cursor, uint256 size) external view returns (uint256[] memory, tuple(uint8 position, uint256 amount, bool claimed)[] memory, uint256)',
 ];
 
 class PancakePredictionBot {
@@ -50,7 +51,8 @@ class PancakePredictionBot {
             skipNextRound: false,     // Flag to skip next round after uncertain prediction
             processedRounds: new Set(), // Track rounds we've already checked to prevent duplicate processing
             shouldBetNow: false,      // Flag to bypass timing check after confident prediction
-            pendingWinClaims: new Map() // Track assumed wins that need verification: epoch → betAmount
+            pendingWinClaims: new Map(), // Track assumed wins that need verification: epoch → betAmount
+            doubleDownCount: 0        // How many consecutive doubles we're on (for maxDoubleDowns enforcement)
         };
     }
 
@@ -170,6 +172,10 @@ class PancakePredictionBot {
         this.telegramController.onReset(async () => {
             this.reset();
             return '✅ Sequence reset! Next /start will use base bet.';
+        });
+
+        this.telegramController.onClaim(async () => {
+            return await this.claimAllWinnings();
         });
 
         this.telegramController.onContinue(async () => {
@@ -332,6 +338,35 @@ class PancakePredictionBot {
         });
     }
 
+    // Calculate how many double-downs a given bet amount represents
+    // Base bet = 0 doubles, first double = 1, etc.
+    // Progression: base, then each step = (accumulated losses) * 2
+    getDoubleDownLevel(betAmount) {
+        const base = parseFloat(this.config.baseBetAmount);
+        const bet = parseFloat(betAmount);
+        
+        // If bet is at (or below) base, it's 0 doubles
+        if (bet <= base + 0.0000001) {
+            return 0;
+        }
+        
+        // Walk the Martingale progression and count steps until we reach/exceed the bet
+        let accumulated = 0;
+        let currentBet = base;
+        let level = 0;
+        
+        while (level < 50) { // safety cap
+            accumulated += currentBet;
+            currentBet = accumulated * 2;
+            level++;
+            // Check if this step matches the bet amount (within rounding tolerance)
+            if (Math.abs(currentBet - bet) < 0.0001 || currentBet > bet) {
+                return level;
+            }
+        }
+        return level;
+    }
+
     calculateNextBet(consecutiveLosses, totalLost = 0) {
         const base = parseFloat(this.config.baseBetAmount);
         const maxDoubleDowns = parseInt(this.config.maxDoubleDowns);
@@ -462,12 +497,30 @@ class PancakePredictionBot {
                 this.earlyPrediction.assumedLosses += betAmount;
             }
             
-            // Check if next bet exceeds max allowed - BUT ONLY IF WE'RE PREDICTING A LOSS
+            // Check limits - BUT ONLY IF WE'RE PREDICTING A LOSS
             // If we're predicting a WIN, next bet will be base bet (no problem)
             if (!assumedWin) {
                 const maxBet = parseFloat(this.config.maxEarlyPredictionBet);
-                if (nextBet > maxBet) {
-                    console.log(`🛑 STOPPING: Predicted LOSS, and next bet (${nextBet.toFixed(4)} BNB) would exceed max (${maxBet} BNB)`);
+                const maxDoubles = parseInt(this.config.maxDoubleDowns);
+                
+                // Figure out how many double-downs the NEXT bet represents
+                const nextBetDoubleLevel = this.getDoubleDownLevel(nextBet);
+                
+                // Check BOTH limits: max bet amount AND max double-downs
+                const exceedsMaxBet = nextBet > maxBet;
+                const exceedsMaxDoubles = nextBetDoubleLevel > maxDoubles;
+                
+                if (exceedsMaxBet || exceedsMaxDoubles) {
+                    let reason;
+                    if (exceedsMaxBet && exceedsMaxDoubles) {
+                        reason = `exceeds max bet (${maxBet} BNB) and max double-downs (${maxDoubles})`;
+                    } else if (exceedsMaxBet) {
+                        reason = `exceeds max bet of ${maxBet} BNB`;
+                    } else {
+                        reason = `exceeds max double-downs of ${maxDoubles}`;
+                    }
+                    
+                    console.log(`🛑 STOPPING: Predicted LOSS, next bet (${nextBet.toFixed(4)} BNB, double #${nextBetDoubleLevel}) ${reason}`);
                     
                     // Send the prediction message first so user knows what was predicted
                     if (this.telegram) {
@@ -482,12 +535,12 @@ class PancakePredictionBot {
                             `Assumption: LOSS ❌\n` +
                             `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB\n` +
                             `Assumed losses: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB\n` +
-                            `Next bet would be: ${nextBet.toFixed(4)} BNB\n\n` +
-                            `🛑 <b>Stopping - exceeds max bet of ${maxBet} BNB</b>`
+                            `Next bet would be: ${nextBet.toFixed(4)} BNB (double #${nextBetDoubleLevel})\n\n` +
+                            `🛑 <b>Stopping - ${reason}</b>`
                         );
                     }
                     
-                    await this.stop('Next bet would exceed maximum');
+                    await this.stop(`Next bet would exceed maximum (${reason})`);
                     return null;
                 }
             }
@@ -1073,26 +1126,41 @@ class PancakePredictionBot {
                     this.earlyPrediction.shouldBetNow = false;
                 }
                 
-                // CHECK MAX BET LIMIT (when early prediction is enabled)
+                // CHECK MAX BET LIMIT AND MAX DOUBLE-DOWNS (when early prediction is enabled)
                 if (this.config.earlyPrediction) {
                     const maxBet = parseFloat(this.config.maxEarlyPredictionBet);
+                    const maxDoubles = parseInt(this.config.maxDoubleDowns);
                     const currentBetFloat = parseFloat(this.state.currentBet);
+                    const currentDoubleLevel = this.getDoubleDownLevel(currentBetFloat);
                     
-                    if (currentBetFloat > maxBet) {
-                        console.log(`🛑 STOPPING: Current bet (${currentBetFloat.toFixed(4)} BNB) exceeds max (${maxBet} BNB)`);
+                    const exceedsMaxBet = currentBetFloat > maxBet;
+                    const exceedsMaxDoubles = currentDoubleLevel > maxDoubles;
+                    
+                    if (exceedsMaxBet || exceedsMaxDoubles) {
+                        let reason;
+                        if (exceedsMaxBet && exceedsMaxDoubles) {
+                            reason = `exceeds max bet (${maxBet} BNB) and max double-downs (${maxDoubles})`;
+                        } else if (exceedsMaxBet) {
+                            reason = `exceeds max bet of ${maxBet} BNB`;
+                        } else {
+                            reason = `exceeds max double-downs of ${maxDoubles}`;
+                        }
+                        
+                        console.log(`🛑 STOPPING: Current bet (${currentBetFloat.toFixed(4)} BNB, double #${currentDoubleLevel}) ${reason}`);
                         
                         if (this.telegram) {
                             await this.telegram.sendMessage(
                                 `🛑 <b>Bot Stopped</b>\n\n` +
-                                `Reason: Bet amount exceeds maximum\n` +
-                                `Current bet: ${currentBetFloat.toFixed(4)} BNB\n` +
-                                `Maximum allowed: ${maxBet} BNB\n` +
+                                `Reason: ${reason}\n` +
+                                `Current bet: ${currentBetFloat.toFixed(4)} BNB (double #${currentDoubleLevel})\n` +
+                                `Max bet: ${maxBet} BNB\n` +
+                                `Max double-downs: ${maxDoubles}\n` +
                                 `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB\n` +
                                 `Assumed losses: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB`
                             );
                         }
                         
-                        await this.stop();
+                        await this.stop(reason);
                         return;
                     }
                 }
@@ -1159,6 +1227,126 @@ class PancakePredictionBot {
             if (this.telegram) {
                 await this.telegram.notifyError(error.message);
             }
+        }
+    }
+
+    async claimAllWinnings() {
+        try {
+            console.log('🔍 Scanning for unclaimed winnings...');
+            
+            // Use getUserRounds() - the same contract function the PancakeSwap
+            // frontend uses. It returns ONLY the rounds you actually participated in,
+            // so we don't have to scan the blockchain round-by-round.
+            const userAddress = this.wallet.address;
+            const allEpochs = [];
+            
+            // Paginate through getUserRounds (contract returns them newest-first).
+            // We grab up to 1000 at a time until we've collected the user's rounds.
+            let cursor = 0;
+            const PAGE_SIZE = 1000;
+            const MAX_PAGES = 5; // up to 5000 rounds of history
+            
+            for (let page = 0; page < MAX_PAGES; page++) {
+                try {
+                    const result = await this.contract.getUserRounds(userAddress, cursor, PAGE_SIZE);
+                    const epochs = result[0]; // uint256[] of epochs
+                    // result[1] is BetInfo[] (position, amount, claimed) - we don't need it here
+                    const nextCursor = result[2];
+                    
+                    if (epochs.length === 0) break;
+                    
+                    for (const e of epochs) {
+                        allEpochs.push(Number(e));
+                    }
+                    
+                    // If we got fewer than a full page, we've reached the end
+                    if (epochs.length < PAGE_SIZE) break;
+                    
+                    cursor = Number(nextCursor);
+                } catch (e) {
+                    console.error(`Error fetching user rounds page ${page}: ${e.message}`);
+                    break;
+                }
+            }
+            
+            if (allEpochs.length === 0) {
+                return `✅ <b>No Rounds Found</b>\n\n` +
+                       `You haven't participated in any prediction rounds with this wallet.`;
+            }
+            
+            console.log(`Found ${allEpochs.length} rounds you participated in. Checking which are claimable...`);
+            
+            // Now check which of YOUR rounds are actually claimable (won + unclaimed).
+            // This only checks rounds you bet on, not every round on the blockchain.
+            const claimableEpochs = [];
+            
+            for (const epoch of allEpochs) {
+                try {
+                    const isClaimable = await this.contract.claimable(epoch, userAddress);
+                    if (isClaimable) {
+                        claimableEpochs.push(epoch);
+                        console.log(`  ✅ Round ${epoch} is claimable`);
+                    }
+                } catch (e) {
+                    continue;
+                }
+            }
+            
+            if (claimableEpochs.length === 0) {
+                return `✅ <b>No Unclaimed Winnings</b>\n\n` +
+                       `Checked all ${allEpochs.length} rounds you played.\n` +
+                       `Everything is already claimed!`;
+            }
+            
+            console.log(`Found ${claimableEpochs.length} claimable rounds, claiming in one transaction...`);
+            
+            // Record balance before claiming to calculate actual winnings
+            const balanceBefore = await this.provider.getBalance(userAddress);
+            
+            // Claim ALL winning rounds in a SINGLE transaction - exactly like the
+            // frontend's "Collect Winnings" button. One gas fee for everything.
+            // We only batch if there are more than 100 (to stay under block gas limit).
+            const BATCH_SIZE = 100;
+            let claimedCount = 0;
+            const failedBatches = [];
+            
+            for (let i = 0; i < claimableEpochs.length; i += BATCH_SIZE) {
+                const batch = claimableEpochs.slice(i, i + BATCH_SIZE);
+                try {
+                    console.log(`Claiming ${batch.length} rounds in one transaction...`);
+                    const tx = await this.contract.claim(batch);
+                    await tx.wait();
+                    claimedCount += batch.length;
+                    console.log(`✅ Claimed: ${batch.join(', ')}`);
+                } catch (e) {
+                    console.error(`❌ Failed to claim batch: ${e.message}`);
+                    failedBatches.push(batch);
+                }
+            }
+            
+            // Calculate actual winnings received
+            const balanceAfter = await this.provider.getBalance(userAddress);
+            const netReceived = parseFloat(ethers.formatEther(balanceAfter - balanceBefore));
+            this.state.balance = ethers.formatEther(balanceAfter);
+            
+            const txCount = Math.ceil(claimableEpochs.length / BATCH_SIZE);
+            
+            let message = `💰 <b>Claim Complete</b>\n\n`;
+            message += `Rounds claimed: ${claimedCount}/${claimableEpochs.length}\n`;
+            message += `Transactions used: ${txCount - failedBatches.length}\n`;
+            message += `Net received: ${netReceived.toFixed(6)} BNB (after gas)\n\n`;
+            message += `New balance: ${this.state.balance} BNB`;
+            
+            if (failedBatches.length > 0) {
+                const failedCount = failedBatches.reduce((sum, b) => sum + b.length, 0);
+                message += `\n\n⚠️ ${failedCount} rounds failed. Try /claim again.`;
+            }
+            
+            return message;
+            
+        } catch (error) {
+            console.error('Error claiming winnings:', error.message);
+            return `❌ <b>Claim Error</b>\n\n${error.message}`;
         }
     }
 
