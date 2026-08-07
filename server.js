@@ -246,8 +246,8 @@ class PancakePredictionBot {
 
         this.telegramController.onSetMax(async (max) => {
             const maxNum = parseInt(max);
-            if (isNaN(maxNum) || maxNum < 1 || maxNum > 15) {
-                return '❌ Invalid number. Use 1-15. Example: /setmax 5';
+            if (isNaN(maxNum) || maxNum < 0 || maxNum > 15) {
+                return '❌ Invalid number. Use 0-15. Example: /setmax 3\n(0 = single round, no double-downs)';
             }
             
             if (this.isRunning) {
