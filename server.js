@@ -1242,6 +1242,8 @@ class PancakePredictionBot {
             
             // Paginate through getUserRounds (contract returns them newest-first).
             // We grab up to 1000 at a time until we've collected the user's rounds.
+            // getUserRounds ALSO tells us which rounds are already claimed, so we can
+            // skip those entirely instead of re-checking them.
             let cursor = 0;
             const PAGE_SIZE = 1000;
             const MAX_PAGES = 5; // up to 5000 rounds of history
@@ -1249,14 +1251,18 @@ class PancakePredictionBot {
             for (let page = 0; page < MAX_PAGES; page++) {
                 try {
                     const result = await this.contract.getUserRounds(userAddress, cursor, PAGE_SIZE);
-                    const epochs = result[0]; // uint256[] of epochs
-                    // result[1] is BetInfo[] (position, amount, claimed) - we don't need it here
+                    const epochs = result[0];   // uint256[] of epochs
+                    const betInfos = result[1]; // BetInfo[] (position, amount, claimed)
                     const nextCursor = result[2];
                     
                     if (epochs.length === 0) break;
                     
-                    for (const e of epochs) {
-                        allEpochs.push(Number(e));
+                    for (let i = 0; i < epochs.length; i++) {
+                        const alreadyClaimed = betInfos[i][2]; // claimed flag
+                        // Only keep rounds we haven't already claimed
+                        if (!alreadyClaimed) {
+                            allEpochs.push(Number(epochs[i]));
+                        }
                     }
                     
                     // If we got fewer than a full page, we've reached the end
@@ -1270,35 +1276,53 @@ class PancakePredictionBot {
             }
             
             if (allEpochs.length === 0) {
-                return `✅ <b>No Rounds Found</b>\n\n` +
-                       `You haven't participated in any prediction rounds with this wallet.`;
+                return `✅ <b>No Unclaimed Winnings</b>\n\n` +
+                       `Every round you played is already claimed (or you have no rounds).`;
             }
             
-            console.log(`Found ${allEpochs.length} rounds you participated in. Checking which are claimable...`);
+            console.log(`Found ${allEpochs.length} unclaimed rounds. Checking which are winners...`);
             
-            // Now check which of YOUR rounds are actually claimable (won + unclaimed).
-            // This only checks rounds you bet on, not every round on the blockchain.
+            // Check which of the unclaimed rounds are actually WINS (claimable).
+            // Run these checks in PARALLEL batches instead of one-at-a-time,
+            // which is dramatically faster (a 100-round check goes from ~10s to ~1s).
             const claimableEpochs = [];
+            const CHECK_BATCH = 25; // how many claimable() calls to fire at once
             
-            for (const epoch of allEpochs) {
-                try {
-                    const isClaimable = await this.contract.claimable(epoch, userAddress);
-                    if (isClaimable) {
+            for (let i = 0; i < allEpochs.length; i += CHECK_BATCH) {
+                const batch = allEpochs.slice(i, i + CHECK_BATCH);
+                const results = await Promise.all(
+                    batch.map(async (epoch) => {
+                        try {
+                            const isClaimable = await this.contract.claimable(epoch, userAddress);
+                            return isClaimable ? epoch : null;
+                        } catch (e) {
+                            return null;
+                        }
+                    })
+                );
+                for (const epoch of results) {
+                    if (epoch !== null) {
                         claimableEpochs.push(epoch);
-                        console.log(`  ✅ Round ${epoch} is claimable`);
                     }
-                } catch (e) {
-                    continue;
                 }
             }
             
             if (claimableEpochs.length === 0) {
                 return `✅ <b>No Unclaimed Winnings</b>\n\n` +
-                       `Checked all ${allEpochs.length} rounds you played.\n` +
-                       `Everything is already claimed!`;
+                       `Checked ${allEpochs.length} unclaimed rounds.\n` +
+                       `None of them were wins to claim.`;
             }
             
             console.log(`Found ${claimableEpochs.length} claimable rounds, claiming in one transaction...`);
+            
+            // Let the user know we found winners and are now submitting the transaction
+            // (this is the part that takes a few seconds for block confirmation)
+            if (this.telegram) {
+                await this.telegram.sendMessage(
+                    `💵 Found ${claimableEpochs.length} winning round${claimableEpochs.length === 1 ? '' : 's'} to claim.\n` +
+                    `Submitting transaction...`
+                );
+            }
             
             // Record balance before claiming to calculate actual winnings
             const balanceBefore = await this.provider.getBalance(userAddress);
