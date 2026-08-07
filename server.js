@@ -1240,13 +1240,14 @@ class PancakePredictionBot {
             const userAddress = this.wallet.address;
             const allEpochs = [];
             
-            // Paginate through getUserRounds (contract returns them newest-first).
-            // We grab up to 1000 at a time until we've collected the user's rounds.
-            // getUserRounds ALSO tells us which rounds are already claimed, so we can
-            // skip those entirely instead of re-checking them.
+            // Paginate through getUserRounds. It returns each round the user played
+            // along with a "claimed" flag. We keep ALL rounds (claimed or not) so we
+            // can report accurately, but track how many were already claimed.
             let cursor = 0;
             const PAGE_SIZE = 1000;
             const MAX_PAGES = 5; // up to 5000 rounds of history
+            let alreadyClaimedCount = 0;
+            const unclaimedEpochs = [];
             
             for (let page = 0; page < MAX_PAGES; page++) {
                 try {
@@ -1258,59 +1259,91 @@ class PancakePredictionBot {
                     if (epochs.length === 0) break;
                     
                     for (let i = 0; i < epochs.length; i++) {
-                        const alreadyClaimed = betInfos[i][2]; // claimed flag
-                        // Only keep rounds we haven't already claimed
-                        if (!alreadyClaimed) {
-                            allEpochs.push(Number(epochs[i]));
+                        const ep = Number(epochs[i]);
+                        allEpochs.push(ep);
+                        // BetInfo tuple: [position, amount, claimed]
+                        const claimed = betInfos[i][2];
+                        if (claimed) {
+                            alreadyClaimedCount++;
+                        } else {
+                            unclaimedEpochs.push(ep);
                         }
                     }
                     
-                    // If we got fewer than a full page, we've reached the end
                     if (epochs.length < PAGE_SIZE) break;
-                    
                     cursor = Number(nextCursor);
                 } catch (e) {
                     console.error(`Error fetching user rounds page ${page}: ${e.message}`);
+                    // If pagination fails, work with what we have rather than giving up
                     break;
                 }
             }
             
             if (allEpochs.length === 0) {
-                return `✅ <b>No Unclaimed Winnings</b>\n\n` +
-                       `Every round you played is already claimed (or you have no rounds).`;
+                return `⚠️ <b>No Rounds Found</b>\n\n` +
+                       `getUserRounds returned nothing for this wallet.\n` +
+                       `If you're sure you have a win, the RPC may be lagging — try again in a moment.`;
             }
             
-            console.log(`Found ${allEpochs.length} unclaimed rounds. Checking which are winners...`);
+            console.log(`Total rounds: ${allEpochs.length}, already claimed: ${alreadyClaimedCount}, unclaimed: ${unclaimedEpochs.length}`);
             
-            // Check which of the unclaimed rounds are actually WINS (claimable).
-            // Run these checks in PARALLEL batches instead of one-at-a-time,
-            // which is dramatically faster (a 100-round check goes from ~10s to ~1s).
+            // Decide which rounds to check for claimability.
+            // Normally we only need to check the unclaimed ones. But if the claimed-flag
+            // filter left us with nothing (edge case / flag mismatch), fall back to
+            // checking the most recent 50 rounds directly so we never miss a real win.
+            let epochsToCheck = unclaimedEpochs;
+            if (epochsToCheck.length === 0) {
+                console.log('No unclaimed rounds by flag - falling back to checking recent rounds directly');
+                epochsToCheck = allEpochs.slice(-50);
+            }
+            
+            // Check claimability WITH RETRIES so a rate-limited RPC call doesn't get
+            // silently dropped. Use modest concurrency (8 at a time) to avoid tripping
+            // rate limits on the public RPC.
             const claimableEpochs = [];
-            const CHECK_BATCH = 25; // how many claimable() calls to fire at once
+            let checkErrors = 0;
+            const CHECK_BATCH = 8;
             
-            for (let i = 0; i < allEpochs.length; i += CHECK_BATCH) {
-                const batch = allEpochs.slice(i, i + CHECK_BATCH);
-                const results = await Promise.all(
-                    batch.map(async (epoch) => {
-                        try {
-                            const isClaimable = await this.contract.claimable(epoch, userAddress);
-                            return isClaimable ? epoch : null;
-                        } catch (e) {
-                            return null;
+            const checkClaimable = async (epoch) => {
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    try {
+                        return await this.contract.claimable(epoch, userAddress);
+                    } catch (e) {
+                        if (attempt === 2) {
+                            checkErrors++;
+                            console.error(`claimable(${epoch}) failed after retries: ${e.message}`);
+                            return false;
                         }
-                    })
+                        // brief backoff before retry
+                        await new Promise(r => setTimeout(r, 300));
+                    }
+                }
+                return false;
+            };
+            
+            for (let i = 0; i < epochsToCheck.length; i += CHECK_BATCH) {
+                const batch = epochsToCheck.slice(i, i + CHECK_BATCH);
+                const results = await Promise.all(
+                    batch.map(async (epoch) => (await checkClaimable(epoch)) ? epoch : null)
                 );
                 for (const epoch of results) {
-                    if (epoch !== null) {
-                        claimableEpochs.push(epoch);
-                    }
+                    if (epoch !== null) claimableEpochs.push(epoch);
                 }
             }
             
             if (claimableEpochs.length === 0) {
-                return `✅ <b>No Unclaimed Winnings</b>\n\n` +
-                       `Checked ${allEpochs.length} unclaimed rounds.\n` +
-                       `None of them were wins to claim.`;
+                let msg = `✅ <b>No Claimable Winnings Found</b>\n\n`;
+                msg += `Rounds played: ${allEpochs.length}\n`;
+                msg += `Already claimed: ${alreadyClaimedCount}\n`;
+                msg += `Checked for wins: ${epochsToCheck.length}\n`;
+                if (checkErrors > 0) {
+                    msg += `\n⚠️ ${checkErrors} checks failed (RPC errors).\n`;
+                    msg += `The RPC may be rate-limiting. Try /claim again.`;
+                } else {
+                    msg += `\nNone were claimable. If a round you won is very recent, `;
+                    msg += `it may not be resolved on-chain yet — wait a minute and retry.`;
+                }
+                return msg;
             }
             
             console.log(`Found ${claimableEpochs.length} claimable rounds, claiming in one transaction...`);
