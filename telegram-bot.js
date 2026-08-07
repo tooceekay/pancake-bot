@@ -292,7 +292,7 @@ export class TelegramController {
                 `/claim [round] - Claim a specific round\n\n` +
                 `<b>Settings:</b>\n` +
                 `/setbet [amount] - Set base bet (e.g. /setbet 0.02)\n` +
-                `/setmax [number] - Set max double-downs (e.g. /setmax 3)\n` +
+                `/setmax [number] - Set max double-downs, 0-15 (0 = single round)\n` +
                 `/setdirection [dir] - Set direction (BULL/BEAR/RANDOM)\n` +
                 `/setprediction [on/off] - Toggle early prediction\n` +
                 `/setthreshold [amount] - Set prediction threshold\n` +
@@ -322,7 +322,7 @@ export class TelegramController {
                 `/claim [round] - Claim a specific round\n\n` +
                 `<b>Settings:</b>\n` +
                 `/setbet [amount] - Set base bet (e.g. /setbet 0.02)\n` +
-                `/setmax [number] - Set max double-downs (e.g. /setmax 3)\n` +
+                `/setmax [number] - Set max double-downs, 0-15 (0 = single round)\n` +
                 `/setdirection [dir] - Set direction (BULL/BEAR/RANDOM)\n` +
                 `/setprediction [on/off] - Toggle early prediction\n` +
                 `/setthreshold [amount] - Set prediction threshold\n` +
