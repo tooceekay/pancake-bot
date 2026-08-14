@@ -194,6 +194,10 @@ export class TelegramController {
         this.callbacks.claim = callback;
     }
 
+    onProfit(callback) {
+        this.callbacks.profit = callback;
+    }
+
     // Check if user is authorized
     isAuthorized(chatId) {
         return this.allowedChatIds.length === 0 || 
@@ -300,6 +304,7 @@ export class TelegramController {
                 `/settings - View status & settings (or /status)\n\n` +
                 `<b>Info:</b>\n` +
                 `/balance - Check wallet balance\n` +
+                `/profit - Session profit since /start\n` +
                 `/stats - View trading statistics\n` +
                 `/commands - Show this help message\n` +
                 `/help - Show this help message`;
@@ -330,6 +335,7 @@ export class TelegramController {
                 `/settings - View status & settings (or /status)\n\n` +
                 `<b>Info:</b>\n` +
                 `/balance - Check wallet balance\n` +
+                `/profit - Session profit since /start\n` +
                 `/stats - View trading statistics\n` +
                 `/commands - Show this help message\n` +
                 `/help - Show this help message`;
@@ -348,6 +354,21 @@ export class TelegramController {
 
             if (this.callbacks.reset) {
                 const result = await this.callbacks.reset();
+                await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
+            }
+        });
+
+        // /profit command - show session profit since last /start
+        this.bot.onText(/\/profit/, async (msg) => {
+            const chatId = msg.chat.id;
+            
+            if (!this.isAuthorized(chatId)) {
+                await this.bot.sendMessage(chatId, '🚫 Unauthorized');
+                return;
+            }
+
+            if (this.callbacks.profit) {
+                const result = await this.callbacks.profit();
                 await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
             }
         });

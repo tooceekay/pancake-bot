@@ -39,7 +39,13 @@ class PancakePredictionBot {
             totalWagered: 0,
             totalWon: 0,
             balance: '0',
-            totalLost: 0
+            totalLost: 0,
+            // Session profit tracking (resets each time you /start)
+            sessionStartBalance: null,   // wallet balance when this session began
+            sessionStartTime: null,      // when this session began
+            sessionStartBets: 0,         // totalBets at session start
+            sessionStartWins: 0,         // wins at session start
+            sessionStartLosses: 0        // losses at session start
         };
         
         // Early prediction tracking
@@ -179,6 +185,54 @@ class PancakePredictionBot {
             return await this.claimAllWinnings(specificRound);
         });
 
+        this.telegramController.onProfit(async () => {
+            if (this.state.sessionStartBalance === null) {
+                return `📊 <b>Session Profit</b>\n\n` +
+                       `No active session. Use /start to begin tracking profit.`;
+            }
+            
+            // Fetch live balance
+            let liveBalance = parseFloat(this.state.balance);
+            try {
+                const bal = await this.provider.getBalance(this.wallet.address);
+                liveBalance = parseFloat(ethers.formatEther(bal));
+                this.state.balance = liveBalance.toFixed(18);
+            } catch (e) {
+                // use cached
+            }
+            
+            const profit = liveBalance - this.state.sessionStartBalance;
+            const sign = profit >= 0 ? '+' : '';
+            const emoji = profit > 0.0000001 ? '🟢' : (profit < -0.0000001 ? '🔴' : '⚪');
+            const sessionWins = this.state.wins - this.state.sessionStartWins;
+            const sessionLosses = this.state.losses - this.state.sessionStartLosses;
+            const totalGames = sessionWins + sessionLosses;
+            const winRate = totalGames > 0 ? ((sessionWins / totalGames) * 100).toFixed(1) : '0.0';
+            
+            // Duration
+            let durationStr = 'just started';
+            if (this.state.sessionStartTime) {
+                const mins = Math.round((Date.now() - this.state.sessionStartTime) / 60000);
+                if (mins >= 60) {
+                    durationStr = `${Math.floor(mins / 60)}h ${mins % 60}m`;
+                } else if (mins > 0) {
+                    durationStr = `${mins}m`;
+                }
+            }
+            
+            const runStatus = this.isRunning ? '🟢 Running' : '🔴 Stopped';
+            
+            let msg = `📊 <b>Session Profit</b>\n\n`;
+            msg += `<b>P/L:</b> ${emoji} ${sign}${profit.toFixed(6)} BNB\n`;
+            msg += `<b>Record:</b> ${sessionWins}W / ${sessionLosses}L (${winRate}% win rate)\n`;
+            msg += `<b>Duration:</b> ${durationStr}\n`;
+            msg += `<b>Status:</b> ${runStatus}\n\n`;
+            msg += `Started at: ${this.state.sessionStartBalance.toFixed(6)} BNB\n`;
+            msg += `Now at: ${liveBalance.toFixed(6)} BNB`;
+            
+            return msg;
+        });
+
         this.telegramController.onContinue(async () => {
             if (this.state.consecutiveLosses > 0) {
                 return `✅ <b>Continuing Current Streak</b>\n\n` +
@@ -196,14 +250,28 @@ class PancakePredictionBot {
             const waiting = this.waitingForResults ? '⏳ Waiting for results' : '✅ Ready to bet';
             const maxLosses = this.config.maxDoubleDowns + 1; // Base bet + doubles
             
+            // Refresh live balance for accurate profit reading
+            let liveBalance = parseFloat(this.state.balance);
+            try {
+                const bal = await this.provider.getBalance(this.wallet.address);
+                liveBalance = parseFloat(ethers.formatEther(bal));
+                this.state.balance = liveBalance.toFixed(18);
+            } catch (e) {
+                // fall back to cached balance
+            }
+            
             let msg = `<b>🤖 BOT STATUS & SETTINGS</b>\n\n`;
             
             // Status info
             msg += `<b>Status:</b> ${status}\n`;
             msg += `<b>State:</b> ${waiting}\n`;
-            msg += `<b>Balance:</b> ${this.state.balance} BNB\n`;
+            msg += `<b>Balance:</b> ${liveBalance.toFixed(6)} BNB\n`;
             msg += `<b>Next Bet:</b> ${this.state.currentBet} BNB\n`;
-            msg += `<b>Loss Streak:</b> ${this.state.consecutiveLosses}/${maxLosses}\n\n`;
+            msg += `<b>Loss Streak:</b> ${this.state.consecutiveLosses}/${maxLosses}\n`;
+            
+            // Session profit (since last /start)
+            msg += this.buildSessionProfitLine(liveBalance);
+            msg += `\n`;
             
             // Settings info
             msg += `<b>⚙️ Configuration</b>\n\n`;
@@ -366,6 +434,24 @@ class PancakePredictionBot {
             }
         }
         return level;
+    }
+
+    // Build a one-line session profit summary for the status view
+    buildSessionProfitLine(liveBalance) {
+        if (this.state.sessionStartBalance === null) {
+            return `<b>Session P/L:</b> — (not started yet)\n`;
+        }
+        
+        const profit = liveBalance - this.state.sessionStartBalance;
+        const sign = profit >= 0 ? '+' : '';
+        const emoji = profit > 0.0000001 ? '🟢' : (profit < -0.0000001 ? '🔴' : '⚪');
+        
+        const sessionWins = this.state.wins - this.state.sessionStartWins;
+        const sessionLosses = this.state.losses - this.state.sessionStartLosses;
+        
+        let line = `<b>Session P/L:</b> ${emoji} ${sign}${profit.toFixed(6)} BNB\n`;
+        line += `<b>Session W/L:</b> ${sessionWins}W / ${sessionLosses}L\n`;
+        return line;
     }
 
     calculateNextBet(consecutiveLosses, totalLost = 0) {
@@ -1493,6 +1579,21 @@ class PancakePredictionBot {
         this.isRunning = true;
         console.log('🤖 Bot started!');
         
+        // Snapshot the session starting point for profit tracking.
+        // Profit = current wallet balance - this starting balance (captures
+        // bets, winnings, and gas all at once - the true bottom line).
+        try {
+            const startBal = await this.provider.getBalance(this.wallet.address);
+            this.state.sessionStartBalance = parseFloat(ethers.formatEther(startBal));
+            this.state.sessionStartTime = Date.now();
+            this.state.sessionStartBets = this.state.totalBets;
+            this.state.sessionStartWins = this.state.wins;
+            this.state.sessionStartLosses = this.state.losses;
+            console.log(`📊 Session start balance: ${this.state.sessionStartBalance.toFixed(6)} BNB`);
+        } catch (e) {
+            console.error('Could not snapshot session start balance:', e.message);
+        }
+        
         // Clear any stale waiting state from previous session
         if (this.waitingForResults && this.lastBetEpoch) {
             console.log(`Checking for stale results from round ${this.lastBetEpoch}...`);
@@ -1536,6 +1637,34 @@ class PancakePredictionBot {
         if (this.telegram) {
             // Build stop message with streak info
             let message = `🛑 <b>BOT STOPPED</b>\n\nReason: ${reason}`;
+            
+            // Session profit summary (uses last known balance)
+            if (this.state.sessionStartBalance !== null) {
+                const liveBalance = parseFloat(this.state.balance);
+                const profit = liveBalance - this.state.sessionStartBalance;
+                const sign = profit >= 0 ? '+' : '';
+                const emoji = profit > 0.0000001 ? '🟢' : (profit < -0.0000001 ? '🔴' : '⚪');
+                const sessionWins = this.state.wins - this.state.sessionStartWins;
+                const sessionLosses = this.state.losses - this.state.sessionStartLosses;
+                
+                // Session duration
+                let durationStr = '';
+                if (this.state.sessionStartTime) {
+                    const mins = Math.round((Date.now() - this.state.sessionStartTime) / 60000);
+                    if (mins >= 60) {
+                        durationStr = `${Math.floor(mins / 60)}h ${mins % 60}m`;
+                    } else {
+                        durationStr = `${mins}m`;
+                    }
+                }
+                
+                message += `\n\n<b>📊 Session Summary</b>`;
+                message += `\n• P/L: ${emoji} ${sign}${profit.toFixed(6)} BNB`;
+                message += `\n• Record: ${sessionWins}W / ${sessionLosses}L`;
+                if (durationStr) message += `\n• Duration: ${durationStr}`;
+                message += `\n• Started at: ${this.state.sessionStartBalance.toFixed(6)} BNB`;
+                message += `\n• Now at: ${liveBalance.toFixed(6)} BNB`;
+            }
             
             if (this.state.consecutiveLosses > 0) {
                 message += `\n\n<b>Current Streak:</b>`;
