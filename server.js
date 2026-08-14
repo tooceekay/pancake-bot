@@ -436,6 +436,28 @@ class PancakePredictionBot {
         return level;
     }
 
+    // Build a short session P/L line to append to win/loss notifications.
+    // Fetches live balance so it's accurate right after a claim.
+    async getProfitFooter() {
+        if (this.state.sessionStartBalance === null) {
+            return '';
+        }
+        let liveBalance = parseFloat(this.state.balance);
+        try {
+            const bal = await this.provider.getBalance(this.wallet.address);
+            liveBalance = parseFloat(ethers.formatEther(bal));
+            this.state.balance = liveBalance.toFixed(18);
+        } catch (e) {
+            // use cached balance
+        }
+        const profit = liveBalance - this.state.sessionStartBalance;
+        const sign = profit >= 0 ? '+' : '';
+        const emoji = profit > 0.0000001 ? '🟢' : (profit < -0.0000001 ? '🔴' : '⚪');
+        const sessionWins = this.state.wins - this.state.sessionStartWins;
+        const sessionLosses = this.state.losses - this.state.sessionStartLosses;
+        return `\n\n📊 Session P/L: ${emoji} ${sign}${profit.toFixed(6)} BNB (${sessionWins}W/${sessionLosses}L)`;
+    }
+
     // Build a one-line session profit summary for the status view
     buildSessionProfitLine(liveBalance) {
         if (this.state.sessionStartBalance === null) {
@@ -737,6 +759,8 @@ class PancakePredictionBot {
                     
                     console.log(`🎉 WON! Round ${this.lastBetEpoch} - All losses cleared`);
                     
+                    this.state.wins++;
+                    
                     // Claim winnings
                     try {
                         const tx = await this.contract.claim([this.lastBetEpoch]);
@@ -747,19 +771,19 @@ class PancakePredictionBot {
                         this.state.balance = ethers.formatEther(newBalance);
                         
                         if (this.telegram) {
+                            const footer = await this.getProfitFooter();
                             await this.telegram.sendMessage(
                                 `🎉 <b>Won Round ${this.lastBetEpoch}</b>\n\n` +
                                 `Direction: ${direction}\n` +
                                 `Bet: ${betAmount.toFixed(4)} BNB\n` +
                                 `Assumption was: ${assumptionCorrect ? 'Correct ✅' : 'Wrong ❌'}\n` +
-                                `All losses cleared!`
+                                `All losses cleared!` +
+                                footer
                             );
                         }
                     } catch (e) {
                         console.error('Claim error:', e.message);
                     }
-                    
-                    this.state.wins++;
                 } else {
                     // We lost - convert assumed loss to real loss
                     if (assumptionCorrect) {
@@ -774,17 +798,19 @@ class PancakePredictionBot {
                     
                     console.log(`❌ LOST! Round ${this.lastBetEpoch} - Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB`);
                     
+                    this.state.losses++;
+                    
                     if (this.telegram) {
+                        const footer = await this.getProfitFooter();
                         await this.telegram.sendMessage(
                             `❌ <b>Lost Round ${this.lastBetEpoch}</b>\n\n` +
                             `Direction: ${direction}\n` +
                             `Bet: ${betAmount.toFixed(4)} BNB\n` +
                             `Assumption was: ${assumptionCorrect ? 'Correct ✅' : 'Wrong ❌'}\n` +
-                            `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB`
+                            `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB` +
+                            footer
                         );
                     }
-                    
-                    this.state.losses++;
                 }
                 
                 this.waitingForResults = false;
@@ -810,6 +836,8 @@ class PancakePredictionBot {
                     
                     console.log(`🎉 WON! Round ${this.lastBetEpoch} - All losses cleared`);
                     
+                    this.state.wins++;
+                    
                     // Claim winnings
                     try {
                         const tx = await this.contract.claim([this.lastBetEpoch]);
@@ -820,19 +848,19 @@ class PancakePredictionBot {
                         this.state.balance = ethers.formatEther(newBalance);
                         
                         if (this.telegram) {
+                            const footer = await this.getProfitFooter();
                             await this.telegram.sendMessage(
                                 `🎉 <b>Won Round ${this.lastBetEpoch}</b>\n\n` +
                                 `Direction: ${direction}\n` +
                                 `Bet: ${betAmount.toFixed(4)} BNB\n` +
                                 `(After uncertain skip - verified real result)\n` +
-                                `All losses cleared!`
+                                `All losses cleared!` +
+                                footer
                             );
                         }
                     } catch (e) {
                         console.error('Claim error:', e.message);
                     }
-                    
-                    this.state.wins++;
                 } else {
                     // We lost - add to real losses
                     this.earlyPrediction.realLosses += betAmount;
@@ -846,7 +874,10 @@ class PancakePredictionBot {
                     console.log(`❌ LOST! Round ${this.lastBetEpoch} - Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB, Assumed losses: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB`);
                     console.log(`📈 Next bet: ${nextBet} BNB (to cover ${totalLosses.toFixed(4)} BNB total losses)`);
                     
+                    this.state.losses++;
+                    
                     if (this.telegram) {
+                        const footer = await this.getProfitFooter();
                         await this.telegram.sendMessage(
                             `❌ <b>Lost Round ${this.lastBetEpoch}</b>\n\n` +
                             `Direction: ${direction}\n` +
@@ -854,11 +885,10 @@ class PancakePredictionBot {
                             `(After uncertain skip - verified real result)\n` +
                             `Real losses: ${this.earlyPrediction.realLosses.toFixed(4)} BNB\n` +
                             `Assumed losses: ${this.earlyPrediction.assumedLosses.toFixed(4)} BNB\n` +
-                            `Next bet: ${nextBet} BNB`
+                            `Next bet: ${nextBet} BNB` +
+                            footer
                         );
                     }
-                    
-                    this.state.losses++;
                 }
                 
                 this.waitingForResults = false;
@@ -895,6 +925,8 @@ class PancakePredictionBot {
                             betAmount,
                             'TBD'
                         );
+                        const footer = await this.getProfitFooter();
+                        if (footer) await this.telegram.sendMessage(footer.trim());
                     }
                 } catch (e) {
                     console.error('Claim error:', e.message);
@@ -939,6 +971,8 @@ class PancakePredictionBot {
                             newLosses,
                             this.config.maxDoubleDowns + 1
                         );
+                        const footer = await this.getProfitFooter();
+                        if (footer) await this.telegram.sendMessage(footer.trim());
                     }
                 }
             }
@@ -1145,7 +1179,8 @@ class PancakePredictionBot {
                                                 message += `Winnings claimed.`;
                                             }
                                             
-                                            await this.telegram.sendMessage(message);
+                                            const footer = await this.getProfitFooter();
+                                            await this.telegram.sendMessage(message + footer);
                                         }
                                     } catch (e) {
                                         console.error(`Claim error for round ${roundEpoch}:`, e.message);
