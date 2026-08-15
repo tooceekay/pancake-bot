@@ -198,6 +198,10 @@ export class TelegramController {
         this.callbacks.profit = callback;
     }
 
+    onBetOnce(callback) {
+        this.callbacks.betOnce = callback;
+    }
+
     // Check if user is authorized
     isAuthorized(chatId) {
         return this.allowedChatIds.length === 0 || 
@@ -205,7 +209,41 @@ export class TelegramController {
     }
 
     // Start listening for commands
+    // Register the command list so Telegram shows a menu when the user types "/"
+    async registerCommandMenu() {
+        const commands = [
+            { command: 'start', description: 'Start trading bot' },
+            { command: 'betonce', description: 'Place ONE bet, then stop (win or lose)' },
+            { command: 'stop', description: 'Stop trading bot' },
+            { command: 'reset', description: 'Reset bet sequence to base' },
+            { command: 'continue', description: 'Continue current streak' },
+            { command: 'settings', description: 'View status & settings' },
+            { command: 'profit', description: 'Session profit since /start' },
+            { command: 'balance', description: 'Check wallet balance' },
+            { command: 'claim', description: 'Claim all unclaimed winnings' },
+            { command: 'stats', description: 'View trading statistics' },
+            { command: 'setbet', description: 'Set base bet (e.g. /setbet 0.02)' },
+            { command: 'setmax', description: 'Set max double-downs, 0-15' },
+            { command: 'setdirection', description: 'Set direction (BULL/BEAR/RANDOM)' },
+            { command: 'setprediction', description: 'Toggle early prediction on/off' },
+            { command: 'setthreshold', description: 'Set prediction threshold' },
+            { command: 'setmaxepbet', description: 'Set max early prediction bet' },
+            { command: 'commands', description: 'Show all commands' },
+            { command: 'help', description: 'Show help' }
+        ];
+        
+        try {
+            await this.bot.setMyCommands(commands);
+            console.log('📋 Telegram command menu registered');
+        } catch (e) {
+            console.error('Could not register command menu:', e.message);
+        }
+    }
+
     start() {
+        // Register the "/" command menu
+        this.registerCommandMenu();
+        
         // /start command
         this.bot.onText(/\/start/, async (msg) => {
             const chatId = msg.chat.id;
@@ -289,6 +327,7 @@ export class TelegramController {
                 `🤖 <b>Bot Commands</b>\n\n` +
                 `<b>Control:</b>\n` +
                 `/start - Start trading bot\n` +
+                `/betonce - Place ONE bet, then stop (win or lose)\n` +
                 `/stop - Stop trading bot\n` +
                 `/reset - Reset bet sequence to base\n` +
                 `/continue - Continue current streak\n` +
@@ -320,6 +359,7 @@ export class TelegramController {
                 `🤖 <b>Bot Commands</b>\n\n` +
                 `<b>Control:</b>\n` +
                 `/start - Start trading bot\n` +
+                `/betonce - Place ONE bet, then stop (win or lose)\n` +
                 `/stop - Stop trading bot\n` +
                 `/reset - Reset bet sequence to base\n` +
                 `/continue - Continue current streak\n` +
@@ -369,6 +409,21 @@ export class TelegramController {
 
             if (this.callbacks.profit) {
                 const result = await this.callbacks.profit();
+                await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
+            }
+        });
+
+        // /betonce command - place a single bet with current settings, then stop
+        this.bot.onText(/\/betonce/, async (msg) => {
+            const chatId = msg.chat.id;
+            
+            if (!this.isAuthorized(chatId)) {
+                await this.bot.sendMessage(chatId, '🚫 Unauthorized');
+                return;
+            }
+
+            if (this.callbacks.betOnce) {
+                const result = await this.callbacks.betOnce();
                 await this.bot.sendMessage(chatId, result, { parse_mode: 'HTML' });
             }
         });

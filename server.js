@@ -29,6 +29,8 @@ class PancakePredictionBot {
         this.isRunning = false;
         this.waitingForResults = false;
         this.lastBetEpoch = null;
+        this.oneTimeBet = false;       // When true: place exactly one bet, then stop (win or lose)
+        this.oneTimeBetEpoch = null;   // The round our one-time bet is on
         
         this.state = {
             consecutiveLosses: 0,
@@ -231,6 +233,30 @@ class PancakePredictionBot {
             msg += `Now at: ${liveBalance.toFixed(6)} BNB`;
             
             return msg;
+        });
+
+        this.telegramController.onBetOnce(async () => {
+            if (this.isRunning) {
+                return '⚠️ Bot is already running. Use /stop first, then /betonce.';
+            }
+            
+            // Set one-time mode and start
+            this.oneTimeBet = true;
+            this.oneTimeBetEpoch = null;
+            
+            // Reset any leftover streak so the one-time bet uses the base bet
+            this.state.currentBet = this.config.baseBetAmount;
+            this.state.consecutiveLosses = 0;
+            this.state.totalLost = 0;
+            this.earlyPrediction.realLosses = 0;
+            this.earlyPrediction.assumedLosses = 0;
+            
+            this.start();
+            
+            return `🎯 <b>One-Time Bet Armed</b>\n\n` +
+                   `💰 Bet: ${this.config.baseBetAmount} BNB\n` +
+                   `📊 Direction: ${this.config.betDirection}\n\n` +
+                   `Placing one bet on the next round, then stopping — win or lose.`;
         });
 
         this.telegramController.onContinue(async () => {
@@ -993,6 +1019,133 @@ class PancakePredictionBot {
 
             console.log(`Current epoch: ${epoch}, Last bet: ${this.lastBetEpoch}, Waiting: ${this.waitingForResults}`);
 
+            // ==========================================================
+            // ONE-TIME BET MODE: place a single bet, wait for the real
+            // result, report it, and stop — no early prediction, no re-bets.
+            // ==========================================================
+            if (this.oneTimeBet) {
+                // If we've already placed our one bet, just wait for it to resolve
+                if (this.oneTimeBetEpoch !== null) {
+                    // Wait until the round we bet on has closed
+                    if (this.oneTimeBetEpoch < epoch) {
+                        const round = await this.contract.rounds(this.oneTimeBetEpoch);
+                        const closePrice = Number(round[5]);
+                        
+                        if (closePrice === 0) {
+                            // Not resolved on-chain yet, keep waiting
+                            return;
+                        }
+                        
+                        // Resolve win/loss
+                        const ledger = await this.contract.ledger(this.oneTimeBetEpoch, this.wallet.address);
+                        const position = Number(ledger[0]);
+                        const lockPrice = Number(round[4]);
+                        const betAmt = parseFloat(ethers.formatEther(ledger[1]));
+                        const direction = position === 0 ? 'BULL' : 'BEAR';
+                        const won = (position === 0 && closePrice > lockPrice) || 
+                                    (position === 1 && closePrice < lockPrice);
+                        const tie = lockPrice === closePrice;
+                        
+                        if (won) {
+                            this.state.wins++;
+                            // Claim the winnings
+                            try {
+                                const tx = await this.contract.claim([this.oneTimeBetEpoch]);
+                                await tx.wait();
+                                const newBalance = await this.provider.getBalance(this.wallet.address);
+                                this.state.balance = ethers.formatEther(newBalance);
+                            } catch (e) {
+                                console.error('One-time claim error:', e.message);
+                            }
+                            
+                            if (this.telegram) {
+                                const footer = await this.getProfitFooter();
+                                await this.telegram.sendMessage(
+                                    `🎉 <b>One-Time Bet: WON</b>\n\n` +
+                                    `Round: ${this.oneTimeBetEpoch}\n` +
+                                    `Direction: ${direction}\n` +
+                                    `Bet: ${betAmt.toFixed(4)} BNB\n` +
+                                    `Winnings claimed!` +
+                                    footer
+                                );
+                            }
+                        } else {
+                            if (!tie) this.state.losses++;
+                            if (this.telegram) {
+                                const footer = await this.getProfitFooter();
+                                await this.telegram.sendMessage(
+                                    `${tie ? '➖' : '❌'} <b>One-Time Bet: ${tie ? 'TIE (house wins)' : 'LOST'}</b>\n\n` +
+                                    `Round: ${this.oneTimeBetEpoch}\n` +
+                                    `Direction: ${direction}\n` +
+                                    `Bet: ${betAmt.toFixed(4)} BNB` +
+                                    footer
+                                );
+                            }
+                        }
+                        
+                        // Done — stop the bot regardless of outcome
+                        this.oneTimeBet = false;
+                        this.oneTimeBetEpoch = null;
+                        this.stop('One-time bet complete');
+                    }
+                    return; // still waiting, or just finished
+                }
+                
+                // Haven't placed the bet yet — place it in the normal timing window
+                const round = await this.contract.rounds(epoch);
+                const lockTimestamp = Number(round[2]);
+                const now = Math.floor(Date.now() / 1000);
+                const timeUntilLock = lockTimestamp - now;
+                
+                if (timeUntilLock <= BET_TIMING_SECONDS && timeUntilLock > 5) {
+                    // Determine direction
+                    let direction;
+                    if (this.config.betDirection === 'BULL') {
+                        direction = 'BULL';
+                    } else if (this.config.betDirection === 'BEAR') {
+                        direction = 'BEAR';
+                    } else {
+                        direction = Math.random() > 0.5 ? 'BULL' : 'BEAR';
+                    }
+                    
+                    const betAmount = ethers.parseEther(this.state.currentBet);
+                    const balance = await this.provider.getBalance(this.wallet.address);
+                    if (balance < betAmount) {
+                        if (this.telegram) {
+                            await this.telegram.sendMessage(`🛑 One-time bet cancelled: insufficient balance.`);
+                        }
+                        this.oneTimeBet = false;
+                        this.stop('Insufficient balance');
+                        return;
+                    }
+                    
+                    console.log(`🎲 ONE-TIME BET: ${this.state.currentBet} BNB on ${direction} - Round ${epoch}`);
+                    const tx = direction === 'BULL'
+                        ? await this.contract.betBull(currentEpoch, { value: betAmount })
+                        : await this.contract.betBear(currentEpoch, { value: betAmount });
+                    await tx.wait();
+                    
+                    this.oneTimeBetEpoch = epoch;
+                    this.lastBetEpoch = epoch;
+                    this.state.totalBets++;
+                    this.state.totalWagered += parseFloat(this.state.currentBet);
+                    
+                    const newBalance = await this.provider.getBalance(this.wallet.address);
+                    this.state.balance = ethers.formatEther(newBalance);
+                    
+                    if (this.telegram) {
+                        await this.telegram.sendMessage(
+                            `🎲 <b>One-Time Bet Placed</b>\n\n` +
+                            `Round: #${epoch}\n` +
+                            `Direction: ${direction}\n` +
+                            `Amount: ${this.state.currentBet} BNB\n\n` +
+                            `Waiting for result, then stopping...`
+                        );
+                    }
+                }
+                return; // one-time mode handled, don't fall into normal flow
+            }
+
             // EARLY PREDICTION FLOW
             if (this.config.earlyPrediction && this.waitingForResults && this.lastBetEpoch && this.lastBetEpoch <= epoch) {
                 // Try to make early prediction (15-25 second window)
@@ -1668,6 +1821,10 @@ class PancakePredictionBot {
         
         this.isRunning = false;
         console.log(`🛑 Bot stopped: ${reason}`);
+        
+        // Clear one-time bet mode if it was active (e.g. manual stop mid-bet)
+        this.oneTimeBet = false;
+        this.oneTimeBetEpoch = null;
 
         if (this.telegram) {
             // Build stop message with streak info
@@ -1729,6 +1886,10 @@ class PancakePredictionBot {
         // Clear waiting state to avoid processing old rounds
         this.waitingForResults = false;
         this.lastBetEpoch = null;
+        
+        // Clear one-time bet mode
+        this.oneTimeBet = false;
+        this.oneTimeBetEpoch = null;
         
         // Reset early prediction state
         this.earlyPrediction.realLosses = 0;
